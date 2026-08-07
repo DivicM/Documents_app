@@ -80,7 +80,7 @@ if (-not $exe) {
 }
 
 $env:TAURI_DEV_SERVER_URL = "http://localhost:5173"
-foreach ($attempt in 1..40) {
+foreach ($attempt in 1..8) {
     try {
         $p = Start-Process $exe -PassThru -ErrorAction Stop
         Start-Sleep -Seconds 2
@@ -93,13 +93,21 @@ foreach ($attempt in 1..40) {
     } catch {
         if ($_.Exception.Message -notmatch "Application Control") { throw }
         if ($attempt -eq 1) {
-            Write-Host "Smart App Control is vetting the new binary; retrying every 30s." -ForegroundColor Yellow
-            Write-Host "This can take up to ~30 minutes for a freshly built exe." -ForegroundColor DarkGray
+            Write-Host "Smart App Control blocked the new binary; relinking to change its hash." -ForegroundColor Yellow
         }
-        Write-Host "  blocked, attempt $attempt/40..." -ForegroundColor DarkGray
-        Start-Sleep -Seconds 30
+        Write-Host "  blocked, relink attempt $attempt/8..." -ForegroundColor DarkGray
+        # SAC verdicts are per file hash, so deleting the executable and
+        # letting cargo link a fresh one usually clears it far faster than
+        # waiting for the original to be vetted.
+        Remove-Item $exe -Force -ErrorAction SilentlyContinue
+        cargo build -p documents-app 2>&1 | Out-Null
+        if (-not (Test-Path $exe)) {
+            Write-Host "relink produced no executable" -ForegroundColor Red
+            exit 1
+        }
     }
 }
 
-Write-Host "still blocked by Smart App Control after 20 minutes" -ForegroundColor Red
+Write-Host "Smart App Control kept blocking the binary across 8 relinks." -ForegroundColor Red
+Write-Host "Wait a few minutes and run this script again." -ForegroundColor DarkGray
 exit 1

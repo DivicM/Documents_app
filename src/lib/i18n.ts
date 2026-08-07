@@ -79,6 +79,42 @@ const hr: Record<string, string> = {
   "error.platform.unsupported": "Ova značajka nije podržana na ovoj platformi.",
   "error.unknown": "Nepoznata greška.",
 
+  "error.image.empty": "Slika je prazna.",
+  "error.image.size_mismatch": "Neispravna veličina slike ({got} umjesto {expected} bajtova).",
+  "error.image.decode_failed": "Nije moguće pročitati sliku.",
+  "error.model.not_found": "Model za prepoznavanje lica nije pronađen.",
+  "error.model.load_failed": "Nije moguće učitati model. ({detail})",
+  "error.detect.failed": "Prepoznavanje lica nije uspjelo. ({detail})",
+  "error.internal.lock": "Interna greška.",
+  "error.crop.degenerate_head": "Brada i tjeme se poklapaju — pomaknite točke.",
+  "error.crop.outside_image":
+    "Izrez ne stane u sliku (nedostaje: lijevo {left}, gore {top}, desno {right}, dolje {bottom} px). Najmanja visina glave koja stane je {minHeadMm} mm.",
+
+  "face.detect": "Prepoznaj lice",
+  "face.detecting": "Prepoznajem…",
+  "face.none_found": "Lice nije pronađeno.",
+  "face.found": "Lice pronađeno ({confidence} %)",
+  "face.roll": "Nagib glave: {deg}°",
+  "face.eye_distance": "Razmak očiju: {px} px",
+  "face.head_height": "Visina glave (mm)",
+  "face.auto": "AUTO",
+  "face.reset": "Vrati",
+  "face.chin": "Brada",
+  "face.crown": "Tjeme",
+  "face.rightEye": "Desno oko",
+  "face.leftEye": "Lijevo oko",
+  "face.drag_hint":
+    "Povucite narančaste točke (brada, tjeme) ili plave (oči) ako automatika promaši. Pomicanje očiju mijenja i nagib.",
+  "face.rotation": "Ispravljanje nagiba (°)",
+  "face.apply_suggested": "Postavi visinu glave na {mm} mm",
+  "face.reset_all": "Vrati sve na automatski",
+  "face.max_dpi": "Najveći DPI bez povećavanja: {dpi}",
+  "face.load_image": "Učitaj sliku",
+
+  "preview.sheet": "Pregled ispisa",
+  "preview.no_image": "Učitajte sliku da vidite kako će list izgledati.",
+  "preview.no_crop": "Izrez nije moguć — prilagodite visinu glave ili točke.",
+
   "disclaimer":
     "Provjeravaju se samo mjerljivi kriteriji. Službenik može odbiti fotografiju i iz razloga koje program ne mjeri.",
 };

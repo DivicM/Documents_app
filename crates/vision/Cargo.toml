@@ -1,0 +1,22 @@
+[package]
+name = "vision"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+domain = { path = "../domain" }
+# JPEG is decoded in the webview, which already has a decoder, and the raw
+# pixels are handed to Rust. That keeps zune-jpeg out of the tree, which
+# currently fails to compile on rustc 1.97.
+image = { version = "0.25", default-features = false, features = ["png"] }
+ndarray = "0.16"
+# Release candidate: the API still shifts between rc versions, so the pin is
+# exact rather than a caret range.
+#
+# `download-binaries` is deliberately off: it pulls an HTTP client into the
+# build, and the offline guarantee test rejects those. The ONNX Runtime library
+# is bundled in the installer instead and loaded at startup, which is what the
+# brief asks for anyway.
+ort = { version = "=2.0.0-rc.13", default-features = false, features = ["ndarray", "load-dynamic"] }

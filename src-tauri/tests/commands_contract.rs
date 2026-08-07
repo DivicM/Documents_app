@@ -25,10 +25,16 @@ fn every_invoked_command_is_registered() {
     let lib_rs = read(&repo_root().join("src-tauri").join("src").join("lib.rs"));
     let ipc_ts = read(&repo_root().join("src").join("lib").join("ipc.ts"));
 
+    // Handlers are listed as `module::name,` and live in several modules, so
+    // match on the path shape rather than on one module's name.
     let registered: BTreeSet<String> = lib_rs
         .lines()
-        .filter_map(|l| l.trim().strip_prefix("commands::"))
-        .map(|s| s.trim_end_matches(',').to_string())
+        .map(|l| l.trim().trim_end_matches(','))
+        .filter_map(|l| l.rsplit_once("::"))
+        .map(|(_, name)| name.to_string())
+        .filter(|name| {
+            !name.is_empty() && name.chars().all(|c| c.is_ascii_lowercase() || c == '_')
+        })
         .collect();
 
     let mut invoked = BTreeSet::new();
@@ -62,18 +68,24 @@ fn every_invoked_command_is_registered() {
 /// would display a raw key like "error.print.failed" to the user.
 #[test]
 fn every_error_key_has_a_translation() {
-    let commands_rs = read(&repo_root().join("src-tauri").join("src").join("commands.rs"));
+    let src = repo_root().join("src-tauri").join("src");
+    // Every module that raises errors, not just commands.rs.
+    let sources: String = ["commands.rs", "face.rs"]
+        .iter()
+        .map(|f| read(&src.join(f)))
+        .collect::<Vec<_>>()
+        .join("\n");
     let i18n_ts = read(&repo_root().join("src").join("lib").join("i18n.ts"));
 
     let mut keys = BTreeSet::new();
-    for (idx, _) in commands_rs.match_indices("\"error.") {
-        let rest = &commands_rs[idx + 1..];
+    for (idx, _) in sources.match_indices("\"error.") {
+        let rest = &sources[idx + 1..];
         if let Some(end) = rest.find('"') {
             keys.insert(rest[..end].to_string());
         }
     }
 
-    assert!(!keys.is_empty(), "no error keys found in commands.rs");
+    assert!(!keys.is_empty(), "no error keys found in the command modules");
 
     let missing: Vec<_> = keys
         .iter()

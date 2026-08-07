@@ -231,6 +231,108 @@ export async function printCalibrationSquare(
   return invoke<number>("print_calibration_square", { printer, applyCalibration });
 }
 
+export interface FaceDetection {
+  faceBox: { x: number; y: number; width: number; height: number };
+  rightEye: { x: number; y: number };
+  leftEye: { x: number; y: number };
+  nose: { x: number; y: number };
+  chin: { x: number; y: number };
+  crown: { x: number; y: number };
+  confidence: number;
+  rollDeg: number;
+  eyeDistancePx: number;
+  anchorsEstimated: boolean;
+}
+
+/**
+ * Detect the subject's face in raw canvas pixels.
+ *
+ * Pixels rather than a file: the webview has already decoded the image, and
+ * sending them straight across avoids re-encoding and keeps a JPEG decoder out
+ * of the Rust build.
+ */
+export async function detectFace(
+  rgba: Uint8ClampedArray,
+  width: number,
+  height: number,
+): Promise<FaceDetection | null> {
+  const r = await invoke<{
+    face_box: { x: number; y: number; width: number; height: number };
+    right_eye: { x: number; y: number };
+    left_eye: { x: number; y: number };
+    nose: { x: number; y: number };
+    chin: { x: number; y: number };
+    crown: { x: number; y: number };
+    confidence: number;
+    roll_deg: number;
+    eye_distance_px: number;
+    anchors_estimated: boolean;
+  } | null>("detect_face", { rgba: Array.from(rgba), width, height });
+
+  if (!r) return null;
+  return {
+    faceBox: r.face_box,
+    rightEye: r.right_eye,
+    leftEye: r.left_eye,
+    nose: r.nose,
+    chin: r.chin,
+    crown: r.crown,
+    confidence: r.confidence,
+    rollDeg: r.roll_deg,
+    eyeDistancePx: r.eye_distance_px,
+    anchorsEstimated: r.anchors_estimated,
+  };
+}
+
+export interface CropResult {
+  rect: { x: number; y: number; width: number; height: number };
+  maxLosslessDpi: number;
+}
+
+export async function computeCrop(req: {
+  chinX: number;
+  chinY: number;
+  crownX: number;
+  crownY: number;
+  imageWidth: number;
+  imageHeight: number;
+  photoWidthMm: number;
+  photoHeightMm: number;
+  headHeightMm: number;
+  chinFromBottomMm?: number | null;
+}): Promise<CropResult> {
+  const r = await invoke<{
+    rect: { x: number; y: number; width: number; height: number };
+    max_lossless_dpi: number;
+  }>("compute_crop", {
+    req: {
+      chin_x: req.chinX,
+      chin_y: req.chinY,
+      crown_x: req.crownX,
+      crown_y: req.crownY,
+      image_width: req.imageWidth,
+      image_height: req.imageHeight,
+      photo_width_mm: req.photoWidthMm,
+      photo_height_mm: req.photoHeightMm,
+      head_height_mm: req.headHeightMm,
+      chin_from_bottom_mm: req.chinFromBottomMm ?? null,
+    },
+  });
+  return { rect: r.rect, maxLosslessDpi: r.max_lossless_dpi };
+}
+
+export interface PhotoPayload {
+  rgba: Uint8ClampedArray;
+  width: number;
+  height: number;
+  cropX: number;
+  cropY: number;
+  cropWidth: number;
+  cropHeight: number;
+  /** Head tilt to straighten, in degrees. */
+  rotationDeg: number;
+}
+
 export async function printSheet(args: {
   printer: string;
   paperWidthMm: number;
@@ -241,6 +343,32 @@ export async function printSheet(args: {
   marginMm: number;
   gutterMm: number;
   alignTopLeft: boolean;
+  /** Omit to print the layout as plain rectangles, without using photo paper. */
+  photo?: PhotoPayload | null;
 }): Promise<number> {
-  return invoke<number>("print_sheet", args);
+  return invoke<number>("print_sheet", {
+    req: {
+      printer: args.printer,
+      paper_width_mm: args.paperWidthMm,
+      paper_height_mm: args.paperHeightMm,
+      photo_width_mm: args.photoWidthMm,
+      photo_height_mm: args.photoHeightMm,
+      count: args.count,
+      margin_mm: args.marginMm,
+      gutter_mm: args.gutterMm,
+      align_top_left: args.alignTopLeft,
+      photo: args.photo
+        ? {
+            rgba: Array.from(args.photo.rgba),
+            width: args.photo.width,
+            height: args.photo.height,
+            crop_x: args.photo.cropX,
+            crop_y: args.photo.cropY,
+            crop_width: args.photo.cropWidth,
+            crop_height: args.photo.cropHeight,
+            rotation_deg: args.photo.rotationDeg,
+          }
+        : null,
+    },
+  });
 }

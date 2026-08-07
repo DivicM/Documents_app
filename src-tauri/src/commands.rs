@@ -21,11 +21,11 @@ pub struct UiError {
 }
 
 impl UiError {
-    fn new(key: &str) -> Self {
+    pub fn new(key: &str) -> Self {
         Self { key: key.into(), params: serde_json::json!({}) }
     }
 
-    fn with(key: &str, params: serde_json::Value) -> Self {
+    pub fn with(key: &str, params: serde_json::Value) -> Self {
         Self { key: key.into(), params }
     }
 }
@@ -401,31 +401,56 @@ pub fn print_calibration_square(printer: String, apply_calibration: bool) -> Cmd
     }
 }
 
+/// The photo to place on the sheet: raw pixels plus the region to use.
+///
+/// Pixels come from the webview's canvas, which has already decoded the file.
+#[derive(Debug, Deserialize)]
+pub struct PhotoPayload {
+    pub rgba: Vec<u8>,
+    pub width: u32,
+    pub height: u32,
+    pub crop_x: f64,
+    pub crop_y: f64,
+    pub crop_width: f64,
+    pub crop_height: f64,
+    /// Head tilt to straighten, in degrees. Zero leaves the crop untouched.
+    #[serde(default)]
+    pub rotation_deg: f64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PrintSheetRequest {
+    pub printer: String,
+    pub paper_width_mm: f64,
+    pub paper_height_mm: f64,
+    pub photo_width_mm: f64,
+    pub photo_height_mm: f64,
+    pub count: u32,
+    pub margin_mm: f64,
+    pub gutter_mm: f64,
+    pub align_top_left: bool,
+    /// Omitted to print the layout as plain rectangles, which is useful for
+    /// checking geometry without using up photo paper.
+    pub photo: Option<PhotoPayload>,
+}
+
 /// Print the laid-out sheet, with the stored calibration applied.
 #[tauri::command]
-#[allow(clippy::too_many_arguments)]
-pub fn print_sheet(
-    printer: String,
-    paper_width_mm: f64,
-    paper_height_mm: f64,
-    photo_width_mm: f64,
-    photo_height_mm: f64,
-    count: u32,
-    margin_mm: f64,
-    gutter_mm: f64,
-    align_top_left: bool,
-) -> CmdResult<u32> {
+pub fn print_sheet(req: PrintSheetRequest) -> CmdResult<u32> {
     #[cfg(windows)]
     {
-        use domain::render::{render_sheet, PrintableOrigin, RenderParams};
+        use domain::render::{
+            render_sheet, render_sheet_with_photo, PhotoSource, PrintableOrigin, RenderParams,
+        };
+        use domain::resample::ImageRef;
 
         let cfg = LayoutConfig {
-            paper: SizeMm::new(paper_width_mm, paper_height_mm),
-            photo: SizeMm::new(photo_width_mm, photo_height_mm),
-            count,
-            margin_mm,
-            gutter_mm,
-            alignment: if align_top_left { Alignment::TopLeft } else { Alignment::Center },
+            paper: SizeMm::new(req.paper_width_mm, req.paper_height_mm),
+            photo: SizeMm::new(req.photo_width_mm, req.photo_height_mm),
+            count: req.count,
+            margin_mm: req.margin_mm,
+            gutter_mm: req.gutter_mm,
+            alignment: if req.align_top_left { Alignment::TopLeft } else { Alignment::Center },
         };
         let sheet = domain::layout::solve(&cfg)
             .map_err(|_| UiError::new("error.layout.invalid_dimensions"))?;
@@ -435,29 +460,52 @@ pub fn print_sheet(
         }
 
         let b = backend();
-        let dpi = b.device_dpi(&printer).map_err(|e| {
+        let dpi = b.device_dpi(&req.printer).map_err(|e| {
             UiError::with("error.printer.dpi_failed", serde_json::json!({ "detail": e.to_string() }))
         })?;
         let m = b
             .hardware_margins_mm(
-                &printer,
-                PaperSize { width_mm: paper_width_mm, height_mm: paper_height_mm },
+                &req.printer,
+                PaperSize { width_mm: req.paper_width_mm, height_mm: req.paper_height_mm },
             )
             .unwrap_or(platform::print::Margins::ZERO);
 
         let printable = SizeMm::new(
-            paper_width_mm - m.left_mm - m.right_mm,
-            paper_height_mm - m.top_mm - m.bottom_mm,
+            req.paper_width_mm - m.left_mm - m.right_mm,
+            req.paper_height_mm - m.top_mm - m.bottom_mm,
         );
 
         let mut params = RenderParams::new(dpi.x as f64, dpi.y as f64);
         params.origin = PrintableOrigin { left_mm: m.left_mm, top_mm: m.top_mm };
-        params.calibration = calibration_for(&printer, paper_width_mm, paper_height_mm, false);
+        params.calibration =
+            calibration_for(&req.printer, req.paper_width_mm, req.paper_height_mm, false);
 
-        let raster = render_sheet(&sheet, printable, &params);
+        let raster = match &req.photo {
+            Some(p) => {
+                let expected = p.width as usize * p.height as usize * 4;
+                if p.rgba.len() != expected {
+                    return Err(UiError::with(
+                        "error.image.size_mismatch",
+                        serde_json::json!({ "expected": expected, "got": p.rgba.len() }),
+                    ));
+                }
+                let image = ImageRef::new(&p.rgba, p.width, p.height)
+                    .ok_or_else(|| UiError::new("error.image.decode_failed"))?;
+                let source = PhotoSource {
+                    image,
+                    crop_x: p.crop_x,
+                    crop_y: p.crop_y,
+                    crop_width: p.crop_width,
+                    crop_height: p.crop_height,
+                    rotation_deg: p.rotation_deg,
+                };
+                render_sheet_with_photo(&sheet, printable, &params, &source)
+            }
+            None => render_sheet(&sheet, printable, &params),
+        };
 
         let job = PrintJob {
-            printer: printer.clone(),
+            printer: req.printer.clone(),
             pixels: raster.pixels,
             width_px: raster.width_px,
             height_px: raster.height_px,
@@ -470,17 +518,7 @@ pub fn print_sheet(
     }
     #[cfg(not(windows))]
     {
-        let _ = (
-            printer,
-            paper_width_mm,
-            paper_height_mm,
-            photo_width_mm,
-            photo_height_mm,
-            count,
-            margin_mm,
-            gutter_mm,
-            align_top_left,
-        );
+        let _ = req;
         Err(UiError::new("error.platform.unsupported"))
     }
 }

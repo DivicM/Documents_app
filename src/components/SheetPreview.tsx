@@ -1,5 +1,5 @@
-import { useEffect, useRef } from "react";
-import type { Layout } from "../lib/ipc";
+import { useEffect, useRef, useState } from "react";
+import type { CropResult, Layout } from "../lib/ipc";
 import { fitScale, mm } from "../lib/units";
 
 interface Props {
@@ -9,7 +9,14 @@ interface Props {
   /** Hardware margin drawn as a dashed guide, so the user sees the dead zone. */
   hardwareMarginMm?: { left: number; top: number; right: number; bottom: number };
   showCutMarks: boolean;
-  maxWidthPx?: number;
+  /** The loaded photo. Without one the sheet shows empty frames. */
+  image?: HTMLImageElement | null;
+  /** Region of the photo each copy shows. */
+  crop?: CropResult | null;
+  /** Straightening angle applied to the crop, in degrees. */
+  rotationDeg?: number;
+  /** Cap on the drawn height, so tall paper does not dominate the panel. */
+  maxHeightPx?: number;
 }
 
 /**
@@ -23,9 +30,27 @@ export function SheetPreview({
   paperHeightMm,
   hardwareMarginMm,
   showCutMarks,
-  maxWidthPx = 420,
+  image,
+  crop,
+  rotationDeg = 0,
+  maxHeightPx = 520,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const wrapRef = useRef<HTMLDivElement>(null);
+  // Measured rather than assumed: a fixed width overflows whenever the column
+  // is narrower than the guess, which is what pushed the sheet off screen.
+  const [availableWidth, setAvailableWidth] = useState(320);
+
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return;
+    const observer = new ResizeObserver((entries) => {
+      const w = entries[0]?.contentRect.width;
+      if (w && w > 0) setAvailableWidth(w);
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -33,10 +58,10 @@ export function SheetPreview({
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    // Scale so the paper fits the available width, capped so tall paper stays
-    // on screen too.
-    const scaleByWidth = fitScale(mm(paperWidthMm), maxWidthPx);
-    const scaleByHeight = fitScale(mm(paperHeightMm), maxWidthPx * 1.5);
+    // Fit within both the measured width and a height cap, so a tall sheet
+    // shrinks instead of running off the panel.
+    const scaleByWidth = fitScale(mm(paperWidthMm), availableWidth);
+    const scaleByHeight = fitScale(mm(paperHeightMm), maxHeightPx);
     const scale = Math.min(scaleByWidth, scaleByHeight);
 
     const dpr = window.devicePixelRatio || 1;
@@ -111,13 +136,84 @@ export function SheetPreview({
         ctx.restore();
       }
 
-      ctx.fillStyle = "#dfe4ea";
-      ctx.fillRect(p.xMm, p.yMm, p.widthMm, p.heightMm);
+      if (image && crop) {
+        drawPhoto(ctx, image, crop, rotationDeg, p);
+      } else {
+        ctx.fillStyle = "#dfe4ea";
+        ctx.fillRect(p.xMm, p.yMm, p.widthMm, p.heightMm);
+      }
+
       ctx.strokeStyle = "#8e959e";
       ctx.lineWidth = 0.25;
       ctx.strokeRect(p.xMm, p.yMm, p.widthMm, p.heightMm);
     }
-  }, [layout, paperWidthMm, paperHeightMm, hardwareMarginMm, showCutMarks, maxWidthPx]);
+  }, [
+    layout,
+    paperWidthMm,
+    paperHeightMm,
+    hardwareMarginMm,
+    showCutMarks,
+    image,
+    crop,
+    rotationDeg,
+    availableWidth,
+    maxHeightPx,
+  ]);
 
-  return <canvas ref={canvasRef} className="sheet-preview" />;
+  return (
+    <div ref={wrapRef} className="sheet-preview-wrap">
+      <canvas ref={canvasRef} className="sheet-preview" />
+    </div>
+  );
+}
+
+/**
+ * Draw the cropped, straightened photo into one placement.
+ *
+ * Mirrors what the Rust renderer does for the printer: the same crop region,
+ * the same straightening angle, and the same 90 degree turn when the layout
+ * chose landscape. Any divergence here is the classic "right on screen, wrong
+ * on paper" bug, so the steps are kept deliberately literal.
+ *
+ * The canvas is already scaled to millimetres, so the destination rectangle is
+ * in millimetres while the source is in image pixels.
+ */
+function drawPhoto(
+  ctx: CanvasRenderingContext2D,
+  image: HTMLImageElement,
+  crop: CropResult,
+  rotationDeg: number,
+  p: { xMm: number; yMm: number; widthMm: number; heightMm: number; rotated: boolean },
+) {
+  const c = crop.rect;
+
+  ctx.save();
+  // Clip so nothing spills into the gutter between copies.
+  ctx.beginPath();
+  ctx.rect(p.xMm, p.yMm, p.widthMm, p.heightMm);
+  ctx.clip();
+
+  // Work from the centre of the placement outwards.
+  ctx.translate(p.xMm + p.widthMm / 2, p.yMm + p.heightMm / 2);
+
+  // A rotated layout turns the photo rather than stretching it, matching the
+  // renderer; without this, faces would come out squashed on rotated sheets.
+  if (p.rotated) {
+    ctx.rotate(Math.PI / 2);
+  }
+  // After the quarter turn the photo's own width and height swap.
+  const drawW = p.rotated ? p.heightMm : p.widthMm;
+  const drawH = p.rotated ? p.widthMm : p.heightMm;
+
+  // Straightening: rotate the source about the crop centre.
+  const theta = (-rotationDeg * Math.PI) / 180;
+  const scaleX = drawW / c.width;
+  const scaleY = drawH / c.height;
+
+  ctx.scale(scaleX, scaleY);
+  ctx.rotate(theta);
+  ctx.translate(-(c.x + c.width / 2), -(c.y + c.height / 2));
+
+  ctx.drawImage(image, 0, 0, image.naturalWidth, image.naturalHeight);
+  ctx.restore();
 }
