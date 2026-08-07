@@ -1,0 +1,13 @@
+/target
+**/target
+node_modules
+dist
+.DS_Store
+Thumbs.db
+
+# Throwaway toolchain verification project
+/_toolchain_probe
+
+# Machine-local cargo settings (contains an absolute target-dir path).
+# See .cargo/config.toml.example for why it exists and how to recreate it.
+/.cargo/config.toml

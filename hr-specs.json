@@ -1,0 +1,246 @@
+{
+  "schema_version": 1,
+  "_note": "Vrijednosti označene \"source\": \"official\" preuzete su doslovno iz propisa/MUP-ovih uputa. Vrijednosti označene \"source\": \"derived\" su inženjerske odluke jer ih propis NE navodi.",
+
+  "specs": [
+    {
+      "id": "hr-passport-35x45",
+      "country": "HR",
+      "document": "passport",
+      "display_name": {
+        "hr": "Putovnica (RH)",
+        "en": "Croatian passport"
+      },
+
+      "legal": {
+        "regulation": "Pravilnik o obrascima i evidencijama putnih isprava hrvatskih državljana, NN 4/10, čl. 4. i čl. 5.",
+        "amendments": ["NN 22/10", "NN 85/15", "NN 118/15", "NN 130/17", "NN 124/19", "NN 27/21"],
+        "guidance_doc": "MUP – Upute za pripremu fotografija za e-dokumente (2013)",
+        "source_urls": [
+          "https://narodne-novine.nn.hr/clanci/sluzbeni/2010_01_4_104.html",
+          "https://narodne-novine.nn.hr/clanci/sluzbeni/2021_03_27_585.html",
+          "https://mup.gov.hr/UserDocsImages/BannerZona/Upute%20za%20fotografije%202013%20(2).pdf"
+        ],
+        "last_verified": "2026-08-07",
+        "copies_required": 1
+      },
+
+      "print": {
+        "width_mm": 35,
+        "height_mm": 45,
+        "source": "official",
+        "min_dpi": 300,
+        "preferred_dpi": 600,
+        "dpi_source": "derived",
+        "dpi_rationale": "Propis ne navodi DPI, samo 'visoka kvaliteta tiska' i 'bez vidljivih piksela'. 300 DPI daje 413x531 px i ~94 px razmaka očiju pri propisanom minimumu od 8 mm, što zadovoljava ICAO 9303 preporuku od >=90 px.",
+        "paper": {
+          "finish": "sjajni i glatki papir bez površinske strukture",
+          "source": "official"
+        }
+      },
+
+      "geometry": {
+        "anchor": "chin_line",
+        "_anchor_note": "MUP mjeri od linije brade prema gore, NE od donjeg ruba slike do linije očiju. Šablona se postavlja tako da donji rub brade dira liniju brade.",
+
+        "head_measure": "chin_to_crown",
+        "_head_measure_note": "Od vrha brade do tjemena/razdjeljka. Kosa (visoke frizure) smije prelaziti liniju; unutar linije mora biti rub lubanje.",
+
+        "head_width_measure": "ear_base_to_ear_base",
+
+        "age_variants": [
+          {
+            "id": "adult",
+            "age_min_years": 11,
+            "head_height_mm": { "min": 31.5, "max": 36.0 },
+            "head_width_mm":  { "min": 17.5, "max": 25.0 },
+            "source": "official"
+          },
+          {
+            "id": "child",
+            "age_max_years": 11,
+            "head_height_mm": { "min": 22.5, "max": 36.0 },
+            "head_width_mm":  { "min": 17.5, "max": 25.0 },
+            "source": "official"
+          }
+        ],
+
+        "eye_distance_mm": {
+          "min": 8.0,
+          "optimal": 10.0,
+          "measure": "pupil_center_to_pupil_center",
+          "source": "official"
+        },
+
+        "horizontal_centering": {
+          "required": true,
+          "tolerance_mm": 1.0,
+          "source_required": "official",
+          "source_tolerance": "derived"
+        },
+
+        "chin_line_from_bottom_mm": {
+          "value": null,
+          "source": "unknown",
+          "_note": "MUP šablona definira liniju brade grafički, bez numeričke kote u tekstu PDF-a. TREBA IZMJERITI iz same šablone prije nego se ovo koristi za automatski crop. Do tada koristi head_height + centriranje kao primarni constraint."
+        }
+      },
+
+      "pose": {
+        "frontal_required": true,
+        "eyes_level_with_x_axis": true,
+        "no_profile_or_semi_profile": true,
+        "source": "official",
+        "max_roll_deg": 5,
+        "max_yaw_deg": 5,
+        "max_pitch_deg": 5,
+        "tolerance_source": "derived",
+        "tolerance_rationale": "Propis kaže samo 'glava ne smije biti nagnuta u stranu, prema naprijed ili natrag'. 5 stupnjeva je ICAO 9303 praksa."
+      },
+
+      "background": {
+        "requirement_text": "Jednobojno svijetla, bez uzoraka, s dovoljnim kontrastom prema licu i kosi. Bez sjena.",
+        "source": "official",
+        "_conflict_note": "MUP Upute na jednom mjestu kažu 'po mogućnosti bijela', a u odjeljku POZADINA 'idealno svijetlosiva'. Oboje su prihvatljivi; default neka bude svijetlosiva.",
+        "allowed": [
+          { "name": "light_grey", "rgb": [235, 235, 235], "tolerance": 15, "default": true },
+          { "name": "white",      "rgb": [255, 255, 255], "tolerance": 12 }
+        ],
+        "uniformity_max_stddev": 6,
+        "uniformity_source": "derived",
+        "shadows_allowed": false,
+        "only_subject_in_frame": true
+      },
+
+      "appearance": {
+        "expression": "neutral",
+        "mouth": "closed",
+        "eyes": "open_and_clearly_visible",
+        "gaze": "direct_at_camera",
+        "hair_must_not_cover": ["eyes", "nose", "mouth"],
+        "glasses": {
+          "allowed": true,
+          "no_reflections": true,
+          "no_tinted_or_sunglasses": true,
+          "frame_must_not_cover_eyes": true,
+          "exception": "Slijepe osobe koje nose tamne naočale smiju priložiti fotografiju s tamnim naočalama."
+        },
+        "head_covering": {
+          "policy": "religious_or_medical_only",
+          "must_show": ["obrazi", "brada", "čelo"],
+          "no_shadows_on_face": true
+        },
+        "children": {
+          "alone_in_frame": true,
+          "face_fully_visible": true,
+          "eyes_open": true
+        },
+        "source": "official"
+      },
+
+      "image_quality": {
+        "max_age_months": 6,
+        "sharp_across_face": true,
+        "even_lighting_no_shadows_or_reflections": true,
+        "natural_colors": true,
+        "no_red_eye": true,
+        "no_visible_pixelation": true,
+        "no_geometric_distortion": true,
+        "_distortion_note": "Zabranjeno rastezanje, mijenjanje proporcija i zrcalno obrtanje.",
+        "no_scratches_stains_stamps_folds": true,
+        "source": "official"
+      },
+
+      "digital": {
+        "supported": false,
+        "_note": "Propis ne definira digitalni format za predaju. Preko eGrađana se fotografija uopće ne prilaže — koristi se ona iz evidencije eOI. Zato ovaj spec ima samo print target."
+      },
+
+      "layout_defaults": {
+        "paper": "10x15cm",
+        "count": 6,
+        "cut_marks": true
+      },
+
+      "rules": [
+        { "id": "head_height",        "severity": "error" },
+        { "id": "head_width",         "severity": "error" },
+        { "id": "eye_distance",       "severity": "error" },
+        { "id": "horizontal_center",  "severity": "error" },
+        { "id": "pose_roll",          "severity": "error" },
+        { "id": "pose_yaw",           "severity": "error" },
+        { "id": "pose_pitch",         "severity": "error" },
+        { "id": "eyes_open",          "severity": "error" },
+        { "id": "mouth_closed",       "severity": "error" },
+        { "id": "background_uniform", "severity": "error" },
+        { "id": "background_shadows", "severity": "error" },
+        { "id": "resolution_min",     "severity": "error" },
+        { "id": "sharpness",          "severity": "warning", "min_laplacian_var": 100 },
+        { "id": "exposure",           "severity": "warning" },
+        { "id": "glasses_glare",      "severity": "warning" },
+        { "id": "red_eye",            "severity": "warning" },
+        { "id": "photo_age",          "severity": "warning" }
+      ]
+    },
+
+    {
+      "id": "hr-putni-list-30x35",
+      "country": "HR",
+      "document": "putni_list",
+      "display_name": {
+        "hr": "Putni list (RH)",
+        "en": "Croatian emergency travel document"
+      },
+      "inherits": "hr-passport-35x45",
+      "legal": {
+        "regulation": "Pravilnik NN 4/10 (izm. NN 27/21), čl. 4. st. 4.",
+        "last_verified": "2026-08-07",
+        "copies_required": 2
+      },
+      "print": {
+        "width_mm": 30,
+        "height_mm": 35,
+        "source": "official"
+      },
+      "geometry": {
+        "age_variants": [
+          {
+            "id": "adult",
+            "age_min_years": 11,
+            "head_height_mm": { "min": 24.5, "max": 28.0 },
+            "head_width_mm":  { "min": 15.0, "max": 21.4 },
+            "source": "official"
+          },
+          {
+            "id": "child",
+            "age_max_years": 11,
+            "head_height_mm": { "min": 17.5, "max": 28.0 },
+            "head_width_mm":  { "min": 15.0, "max": 21.4 },
+            "source": "official"
+          }
+        ]
+      },
+      "layout_defaults": {
+        "paper": "10x15cm",
+        "count": 8,
+        "cut_marks": true
+      }
+    },
+
+    {
+      "id": "hr-intl-treaty-35x45",
+      "country": "HR",
+      "document": "international_treaty_travel_doc",
+      "display_name": {
+        "hr": "Putna isprava po međunarodnom ugovoru",
+        "en": "Travel document under international treaty"
+      },
+      "inherits": "hr-passport-35x45",
+      "legal": {
+        "regulation": "Pravilnik NN 4/10 (izm. NN 27/21), čl. 4. st. 3.",
+        "last_verified": "2026-08-07",
+        "copies_required": 2
+      }
+    }
+  ]
+}

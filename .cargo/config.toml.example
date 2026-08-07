@@ -1,0 +1,10 @@
+# Copy to .cargo/config.toml and adjust the path for your machine.
+#
+# Only needed on Windows with Smart App Control enabled. SAC blocks execution of
+# freshly-linked unsigned binaries under Desktop and Downloads, which makes
+# `cargo test` fail with "An Application Control policy has blocked this file"
+# (os error 4551). Building to a target dir elsewhere under the user profile
+# avoids it. On Linux/macOS, or if the project does not live on the Desktop,
+# this file is unnecessary.
+[build]
+target-dir = "C:/Users/YOURNAME/.cargo-build/documents_app"
