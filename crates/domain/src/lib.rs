@@ -5,7 +5,12 @@
 //! without an image, a printer, or a UI.
 
 pub mod layout;
+pub mod render;
 pub mod units;
 
 pub use layout::{solve, LayoutConfig, LayoutError, Orientation, Placement, Sheet, SizeMm};
+pub use render::{
+    placement_to_pixels, render_sheet, CalibrationScale, PixelRect, PrintableOrigin, Raster,
+    RenderParams,
+};
 pub use units::{max_lossless_dpi, mm_to_px, mm_to_px_exact, px_to_mm, would_upscale};
