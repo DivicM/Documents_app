@@ -18,6 +18,16 @@ interface Props {
   crop: CropResult | null;
   /** Straightening angle in degrees, drawn so the effect is visible. */
   rotationDeg?: number;
+  /** Background mask, drawn as a tint so its edges can be judged. */
+  mask?: { width: number; height: number; data: Uint8Array } | null;
+  /** Whether the mask tint is shown. */
+  showMask?: boolean;
+  /** Active brush; when set, dragging paints instead of moving the crop. */
+  brush?: { mode: "keep" | "erase"; radius: number } | null;
+  /** Called with a completed stroke, in mask coordinates. */
+  onStroke?: (points: Array<[number, number]>) => void;
+  /** When set, a click samples a colour instead of editing. */
+  onPickColour?: ((x: number, y: number) => void) | null;
   /** Called while dragging, in source-image pixels. */
   onAnchorMove: (which: HandleName, x: number, y: number) => void;
   /** Called while dragging the crop itself, with the offset in source pixels. */
@@ -41,6 +51,11 @@ export function PhotoCanvas({
   anchors,
   crop,
   rotationDeg = 0,
+  mask,
+  showMask = false,
+  brush = null,
+  onStroke,
+  onPickColour = null,
   onAnchorMove,
   onCropNudge,
   maxWidthPx = 520,
@@ -50,6 +65,36 @@ export function PhotoCanvas({
   /** Set while dragging the crop body; holds the last pointer position. */
   const cropDrag = useRef<{ x: number; y: number } | null>(null);
   const [cursor, setCursor] = useState("crosshair");
+  /** Points of the stroke currently being drawn, in mask coordinates. */
+  const strokePoints = useRef<Array<[number, number]> | null>(null);
+  /** Mask rendered once into an offscreen canvas, rather than per frame. */
+  const maskCanvas = useRef<HTMLCanvasElement | null>(null);
+
+  // Rebuild the tint only when the mask itself changes.
+  useEffect(() => {
+    if (!mask) {
+      maskCanvas.current = null;
+      return;
+    }
+    const off = document.createElement("canvas");
+    off.width = mask.width;
+    off.height = mask.height;
+    const octx = off.getContext("2d");
+    if (!octx) return;
+
+    const img = octx.createImageData(mask.width, mask.height);
+    for (let i = 0; i < mask.data.length; i++) {
+      // Background is tinted red; the subject stays clear so the face is
+      // visible while brushing.
+      const background = 255 - mask.data[i];
+      img.data[i * 4] = 220;
+      img.data[i * 4 + 1] = 60;
+      img.data[i * 4 + 2] = 60;
+      img.data[i * 4 + 3] = Math.round(background * 0.45);
+    }
+    octx.putImageData(img, 0, 0);
+    maskCanvas.current = off;
+  }, [mask]);
 
   // Scale from source pixels to canvas pixels.
   const scale = image ? Math.min(maxWidthPx / image.width, 1) : 1;
@@ -74,6 +119,12 @@ export function PhotoCanvas({
 
     ctx.clearRect(0, 0, w, h);
     ctx.drawImage(image, 0, 0, w, h);
+
+    // The mask is stretched over the whole photo, matching how it is applied
+    // when the background is replaced.
+    if (showMask && maskCanvas.current) {
+      ctx.drawImage(maskCanvas.current, 0, 0, w, h);
+    }
 
     // Everything outside the crop is dimmed, so the result is obvious. The
     // rectangle is drawn rotated because that is the region the printer will
@@ -152,7 +203,7 @@ export function PhotoCanvas({
         ctx.stroke();
       }
     }
-  }, [image, detection, anchors, crop, rotationDeg, scale, dragging, toCanvas]);
+  }, [image, detection, anchors, crop, rotationDeg, showMask, mask, scale, dragging, toCanvas]);
 
   const hitTest = (mx: number, my: number): Handle => {
     if (!anchors) return null;
@@ -189,8 +240,36 @@ export function PhotoCanvas({
     );
   };
 
+  /** Canvas position to mask coordinates. */
+  const toMask = (x: number, y: number): [number, number] | null => {
+    if (!image || !mask) return null;
+    return [
+      (toSource(x) / image.width) * mask.width,
+      (toSource(y) / image.height) * mask.height,
+    ];
+  };
+
   const onPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const { x, y } = pointerPos(e);
+
+    // The eyedropper consumes the click outright, so a stray drag cannot move
+    // an anchor while the user is only sampling a colour.
+    if (onPickColour) {
+      onPickColour(toSource(x), toSource(y));
+      return;
+    }
+
+    // Painting takes priority: with a brush selected the user is editing the
+    // mask, not repositioning the crop.
+    if (brush && mask && onStroke) {
+      const p = toMask(x, y);
+      if (p) {
+        strokePoints.current = [p];
+        e.currentTarget.setPointerCapture(e.pointerId);
+      }
+      return;
+    }
+
     const hit = hitTest(x, y);
     if (hit) {
       setDragging(hit);
@@ -209,6 +288,12 @@ export function PhotoCanvas({
     if (!image) return;
     const { x, y } = pointerPos(e);
 
+    if (strokePoints.current) {
+      const p = toMask(x, y);
+      if (p) strokePoints.current.push(p);
+      return;
+    }
+
     if (dragging) {
       // Clamp to the image: an anchor outside it has no meaning.
       const sx = Math.max(0, Math.min(image.width, toSource(x)));
@@ -226,12 +311,23 @@ export function PhotoCanvas({
     }
 
     // Hover feedback, so the draggable regions are discoverable.
-    if (hitTest(x, y)) setCursor("grab");
+    if (onPickColour) setCursor("copy");
+    else if (brush) setCursor("cell");
+    else if (hitTest(x, y)) setCursor("grab");
     else if (onCropNudge && insideCrop(x, y)) setCursor("move");
     else setCursor("crosshair");
   };
 
   const endDrag = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    // A stroke is sent once on release, not per pointer event: each one costs
+    // a full mask recomputation.
+    if (strokePoints.current) {
+      const points = strokePoints.current;
+      strokePoints.current = null;
+      e.currentTarget.releasePointerCapture(e.pointerId);
+      if (points.length > 0) onStroke?.(points);
+      return;
+    }
     if (dragging || cropDrag.current) {
       e.currentTarget.releasePointerCapture(e.pointerId);
       setDragging(null);

@@ -4,11 +4,15 @@
 //! rendering layer; keeping them out here is what makes the solver testable
 //! without an image, a printer, or a UI.
 
+pub mod adjust;
 pub mod geometry;
 pub mod layout;
+pub mod mask;
 pub mod overrides;
 pub mod render;
 pub mod resample;
+pub mod rules;
+pub mod spec;
 pub mod units;
 
 pub use geometry::{
@@ -16,6 +20,10 @@ pub use geometry::{
     FaceLandmarks, HeadAnchors, Point, Rect,
 };
 pub use layout::{solve, LayoutConfig, LayoutError, Orientation, Placement, Sheet, SizeMm};
+pub use mask::{
+    apply_edits, apply_threshold, composite_background, AlphaMask, BrushMode, BrushStroke,
+    MaskEdits,
+};
 pub use overrides::{effective, AutoFlags, FaceState, Overrides};
 pub use render::{
     placement_to_pixels, render_sheet, render_sheet_with_photo, CalibrationScale, PhotoSource,

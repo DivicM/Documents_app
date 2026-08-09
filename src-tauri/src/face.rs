@@ -21,7 +21,7 @@ pub struct DetectorState(pub Mutex<Option<FaceDetector>>);
 ///
 /// In development they sit in the repository root; in an installed build they
 /// are next to the binary. Both are checked so the app runs either way.
-fn resource_path(relative: &str) -> Option<std::path::PathBuf> {
+pub(crate) fn resource_path(relative: &str) -> Option<std::path::PathBuf> {
     let mut candidates = Vec::new();
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
@@ -43,7 +43,7 @@ fn resource_path(relative: &str) -> Option<std::path::PathBuf> {
 /// `ort` is built with `load-dynamic`, so it needs an explicit path rather
 /// than linking the runtime in. Nothing is downloaded; the DLL ships with the
 /// app.
-fn ensure_runtime_path() {
+pub(crate) fn ensure_runtime_path() {
     if std::env::var_os("ORT_DYLIB_PATH").is_some() {
         return;
     }

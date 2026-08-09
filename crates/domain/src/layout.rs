@@ -13,6 +13,7 @@ pub struct SizeMm {
 }
 
 impl SizeMm {
+    
     pub fn new(width: f64, height: f64) -> Self {
         Self { width, height }
     }
@@ -209,6 +210,120 @@ fn place(cfg: &LayoutConfig, grid: &Grid, usable: SizeMm, n: u32) -> Vec<Placeme
         .collect()
 }
 
+/// One photo size and how many copies of it are wanted.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct PhotoGroup {
+    pub size: SizeMm,
+    pub count: u32,
+}
+
+/// A placement that remembers which group it came from.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct GroupedPlacement {
+    pub placement: Placement,
+    /// Index into the `groups` slice passed to [`solve_mixed`].
+    pub group: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MixedSheet {
+    pub placements: Vec<GroupedPlacement>,
+    /// Copies of each group that did not fit on this sheet.
+    pub unplaced: Vec<u32>,
+}
+
+/// Arrange several different photo sizes on one sheet (§7).
+///
+/// Packs in shelves: a row is opened at the current height, photos are placed
+/// left to right until the width runs out, then the row closes at the height of
+/// its tallest member and the next begins below. Simple and predictable, which
+/// matters more here than optimal density — a user can always reorder or use a
+/// second sheet.
+///
+/// Groups are placed largest first, since a big photo squeezed in after the
+/// small ones tends to find nowhere to go.
+pub fn solve_mixed(
+    paper: SizeMm,
+    groups: &[PhotoGroup],
+    margin_mm: f64,
+    gutter_mm: f64,
+) -> Result<MixedSheet, LayoutError> {
+    if !paper.width.is_finite() || !paper.height.is_finite() || paper.width <= 0.0 || paper.height <= 0.0
+    {
+        return Err(LayoutError::InvalidDimensions);
+    }
+    if !margin_mm.is_finite() || margin_mm < 0.0 || !gutter_mm.is_finite() || gutter_mm < 0.0 {
+        return Err(LayoutError::InvalidDimensions);
+    }
+    for g in groups {
+        if !g.size.width.is_finite()
+            || !g.size.height.is_finite()
+            || g.size.width <= 0.0
+            || g.size.height <= 0.0
+        {
+            return Err(LayoutError::InvalidDimensions);
+        }
+    }
+
+    let usable = SizeMm::new(paper.width - 2.0 * margin_mm, paper.height - 2.0 * margin_mm);
+    if usable.width <= 0.0 || usable.height <= 0.0 {
+        return Err(LayoutError::NoUsableArea);
+    }
+
+    // Largest area first; ties broken by index so the result is deterministic.
+    let mut order: Vec<usize> = (0..groups.len()).collect();
+    order.sort_by(|&a, &b| {
+        let area = |i: usize| groups[i].size.width * groups[i].size.height;
+        area(b).total_cmp(&area(a)).then(a.cmp(&b))
+    });
+
+    let mut placements = Vec::new();
+    let mut remaining: Vec<u32> = groups.iter().map(|g| g.count).collect();
+
+    let mut shelf_y = margin_mm;
+    let mut cursor_x = margin_mm;
+    let mut shelf_height = 0.0f64;
+
+    for &gi in &order {
+        let size = groups[gi].size;
+        while remaining[gi] > 0 {
+            // Does it fit in the current shelf?
+            let needs_gutter = cursor_x > margin_mm;
+            let x = if needs_gutter { cursor_x + gutter_mm } else { cursor_x };
+
+            if x + size.width > margin_mm + usable.width + 1e-9 {
+                // Close this shelf and open the next.
+                if shelf_height <= 0.0 {
+                    break; // nothing fitted at all; the photo is too wide
+                }
+                shelf_y += shelf_height + gutter_mm;
+                cursor_x = margin_mm;
+                shelf_height = 0.0;
+                continue;
+            }
+
+            if shelf_y + size.height > margin_mm + usable.height + 1e-9 {
+                break; // no vertical room left for this size
+            }
+
+            placements.push(GroupedPlacement {
+                placement: Placement {
+                    x_mm: x,
+                    y_mm: shelf_y,
+                    size,
+                    orientation: Orientation::Portrait,
+                },
+                group: gi,
+            });
+            cursor_x = x + size.width;
+            shelf_height = shelf_height.max(size.height);
+            remaining[gi] -= 1;
+        }
+    }
+
+    Ok(MixedSheet { placements, unplaced: remaining })
+}
+
 fn validate(cfg: &LayoutConfig) -> Result<(), LayoutError> {
     let dims = [
         cfg.paper.width,
@@ -330,6 +445,132 @@ mod tests {
         assert_eq!(sheet.capacity_per_sheet, 6);
         let gap = sheet.placements[1].x_mm - (sheet.placements[0].x_mm + 35.0);
         assert!((gap - 5.0).abs() < 1e-9, "gutter not applied: {gap}");
+    }
+
+    fn group(w: f64, h: f64, count: u32) -> PhotoGroup {
+        PhotoGroup { size: SizeMm::new(w, h), count }
+    }
+
+    /// No placement may escape the margins.
+    fn assert_inside(sheet: &MixedSheet, paper: SizeMm, margin: f64) {
+        for gp in &sheet.placements {
+            let p = gp.placement;
+            assert!(p.x_mm >= margin - 1e-9, "left escaped: {}", p.x_mm);
+            assert!(p.y_mm >= margin - 1e-9, "top escaped: {}", p.y_mm);
+            assert!(
+                p.x_mm + p.size.width <= paper.width - margin + 1e-9,
+                "right escaped: {}",
+                p.x_mm + p.size.width
+            );
+            assert!(
+                p.y_mm + p.size.height <= paper.height - margin + 1e-9,
+                "bottom escaped: {}",
+                p.y_mm + p.size.height
+            );
+        }
+    }
+
+    /// No two placements may overlap.
+    fn assert_no_overlap(sheet: &MixedSheet) {
+        let ps: Vec<Placement> = sheet.placements.iter().map(|g| g.placement).collect();
+        for i in 0..ps.len() {
+            for j in (i + 1)..ps.len() {
+                let (a, b) = (ps[i], ps[j]);
+                let overlap = a.x_mm + 1e-9 < b.x_mm + b.size.width
+                    && b.x_mm + 1e-9 < a.x_mm + a.size.width
+                    && a.y_mm + 1e-9 < b.y_mm + b.size.height
+                    && b.y_mm + 1e-9 < a.y_mm + a.size.height;
+                assert!(!overlap, "placements {i} and {j} overlap: {a:?} {b:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_mixed_sheet_places_both_sizes() {
+        // The brief's example: 4 ID photos plus 2 passport photos together.
+        let paper = SizeMm::new(100.0, 150.0);
+        let groups = [group(35.0, 45.0, 2), group(30.0, 35.0, 4)];
+        let sheet = solve_mixed(paper, &groups, 3.0, 2.0).unwrap();
+
+        assert_eq!(sheet.unplaced, vec![0, 0], "everything should fit");
+        assert_eq!(sheet.placements.len(), 6);
+        assert_inside(&sheet, paper, 3.0);
+        assert_no_overlap(&sheet);
+    }
+
+    #[test]
+    fn mixed_placements_remember_their_group() {
+        let paper = SizeMm::new(100.0, 150.0);
+        let groups = [group(35.0, 45.0, 2), group(30.0, 35.0, 3)];
+        let sheet = solve_mixed(paper, &groups, 3.0, 2.0).unwrap();
+
+        for gp in &sheet.placements {
+            let expected = groups[gp.group].size;
+            assert_eq!(gp.placement.size, expected, "placement lost its group size");
+        }
+        assert_eq!(sheet.placements.iter().filter(|g| g.group == 0).count(), 2);
+        assert_eq!(sheet.placements.iter().filter(|g| g.group == 1).count(), 3);
+    }
+
+    #[test]
+    fn what_does_not_fit_is_reported_not_dropped() {
+        // Silently printing fewer copies than asked would be the worst outcome.
+        let paper = SizeMm::new(100.0, 150.0);
+        let groups = [group(35.0, 45.0, 50)];
+        let sheet = solve_mixed(paper, &groups, 3.0, 2.0).unwrap();
+
+        let placed = sheet.placements.len() as u32;
+        assert!(placed > 0 && placed < 50);
+        assert_eq!(placed + sheet.unplaced[0], 50, "copies went missing");
+    }
+
+    #[test]
+    fn a_single_group_still_fills_the_sheet() {
+        // Mixed packing must not be worse than the plain solver for one size.
+        let paper = SizeMm::new(100.0, 150.0);
+        let sheet = solve_mixed(paper, &[group(35.0, 45.0, 6)], 0.0, 0.0).unwrap();
+        assert_eq!(sheet.placements.len(), 6, "6 of 35x45 should fit on 10x15");
+        assert_inside(&sheet, paper, 0.0);
+        assert_no_overlap(&sheet);
+    }
+
+    #[test]
+    fn a_photo_larger_than_the_paper_is_left_unplaced() {
+        let paper = SizeMm::new(50.0, 50.0);
+        let sheet = solve_mixed(paper, &[group(80.0, 80.0, 3)], 0.0, 0.0).unwrap();
+        assert!(sheet.placements.is_empty());
+        assert_eq!(sheet.unplaced, vec![3]);
+    }
+
+    #[test]
+    fn mixed_rejects_nonsense_dimensions() {
+        let paper = SizeMm::new(100.0, 150.0);
+        assert_eq!(
+            solve_mixed(paper, &[group(f64::NAN, 45.0, 1)], 0.0, 0.0),
+            Err(LayoutError::InvalidDimensions)
+        );
+        assert_eq!(
+            solve_mixed(paper, &[group(35.0, 45.0, 1)], 80.0, 0.0),
+            Err(LayoutError::NoUsableArea)
+        );
+    }
+
+    #[test]
+    fn empty_groups_produce_an_empty_sheet() {
+        let sheet = solve_mixed(SizeMm::new(100.0, 150.0), &[], 3.0, 2.0).unwrap();
+        assert!(sheet.placements.is_empty());
+        assert!(sheet.unplaced.is_empty());
+    }
+
+    #[test]
+    fn gutters_are_respected_between_mixed_photos() {
+        let paper = SizeMm::new(100.0, 150.0);
+        let sheet = solve_mixed(paper, &[group(20.0, 20.0, 2)], 0.0, 5.0).unwrap();
+        assert_eq!(sheet.placements.len(), 2);
+        let a = sheet.placements[0].placement;
+        let b = sheet.placements[1].placement;
+        let gap = b.x_mm - (a.x_mm + a.size.width);
+        assert!((gap - 5.0).abs() < 1e-9, "gutter was {gap}, expected 5");
     }
 
     #[test]

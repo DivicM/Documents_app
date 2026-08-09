@@ -19,4 +19,10 @@ ndarray = "0.16"
 # build, and the offline guarantee test rejects those. The ONNX Runtime library
 # is bundled in the installer instead and loaded at startup, which is what the
 # brief asks for anyway.
-ort = { version = "=2.0.0-rc.13", default-features = false, features = ["ndarray", "load-dynamic"] }
+ort = { version = "=2.0.0-rc.13", default-features = false, features = [
+    "ndarray",
+    "load-dynamic",
+    # DirectML is registered when available and falls back to CPU otherwise, so
+    # the same build runs on machines without a suitable GPU.
+    "directml",
+] }

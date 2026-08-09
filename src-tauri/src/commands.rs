@@ -416,6 +416,21 @@ pub struct PhotoPayload {
     /// Head tilt to straighten, in degrees. Zero leaves the crop untouched.
     #[serde(default)]
     pub rotation_deg: f64,
+    /// Background replacement. Omitted to print the photo as taken.
+    #[serde(default)]
+    pub background: Option<BackgroundPayload>,
+    /// Exposure and white balance. Omitted leaves the photo as taken.
+    #[serde(default)]
+    pub adjustments: Option<domain::adjust::Adjustments>,
+}
+
+/// A mask plus the colour to put behind the subject.
+#[derive(Debug, Deserialize)]
+pub struct BackgroundPayload {
+    pub mask: Vec<u8>,
+    pub mask_width: u32,
+    pub mask_height: u32,
+    pub colour: [u8; 3],
 }
 
 #[derive(Debug, Deserialize)]
@@ -489,7 +504,27 @@ pub fn print_sheet(req: PrintSheetRequest) -> CmdResult<u32> {
                         serde_json::json!({ "expected": expected, "got": p.rgba.len() }),
                     ));
                 }
-                let image = ImageRef::new(&p.rgba, p.width, p.height)
+                // Order matters and must match the preview: tone first, then
+                // background, then crop. Adjusting after replacement would
+                // shift the background colour the user picked.
+                let mut pixels = p.rgba.clone();
+                if let Some(adj) = &p.adjustments {
+                    domain::adjust::apply_adjustments(&mut pixels, adj);
+                }
+                if let Some(bg) = &p.background {
+                    let mask =
+                        domain::mask::AlphaMask::new(bg.mask_width, bg.mask_height, bg.mask.clone())
+                            .ok_or_else(|| UiError::new("error.mask.size_mismatch"))?;
+                    domain::mask::composite_background(
+                        &mut pixels,
+                        p.width,
+                        p.height,
+                        &mask,
+                        bg.colour,
+                    );
+                }
+
+                let image = ImageRef::new(&pixels, p.width, p.height)
                     .ok_or_else(|| UiError::new("error.image.decode_failed"))?;
                 let source = PhotoSource {
                     image,

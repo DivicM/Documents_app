@@ -321,6 +321,13 @@ export async function computeCrop(req: {
   return { rect: r.rect, maxLosslessDpi: r.max_lossless_dpi };
 }
 
+export interface BackgroundPayload {
+  mask: Uint8Array;
+  maskWidth: number;
+  maskHeight: number;
+  colour: [number, number, number];
+}
+
 export interface PhotoPayload {
   rgba: Uint8ClampedArray;
   width: number;
@@ -331,6 +338,276 @@ export interface PhotoPayload {
   cropHeight: number;
   /** Head tilt to straighten, in degrees. */
   rotationDeg: number;
+  /** Background replacement. Omit to print the photo as taken. */
+  background?: BackgroundPayload | null;
+  /** Exposure and white balance. Omit to print the photo as taken. */
+  adjustments?: Adjustments | null;
+}
+
+export interface Adjustments {
+  exposureEv: number;
+  contrast: number;
+  temperature: number;
+  tint: number;
+}
+
+export const NEUTRAL_ADJUSTMENTS: Adjustments = {
+  exposureEv: 0,
+  contrast: 0,
+  temperature: 0,
+  tint: 0,
+};
+
+export function isNeutral(a: Adjustments): boolean {
+  return a.exposureEv === 0 && a.contrast === 0 && a.temperature === 0 && a.tint === 0;
+}
+
+export interface Mask {
+  width: number;
+  height: number;
+  data: Uint8Array;
+  /** Execution provider that ran the model, or how the mask was produced. */
+  backend: string;
+  subjectRatio: number;
+}
+
+function toMask(r: {
+  width: number;
+  height: number;
+  data: number[];
+  backend: string;
+  subject_ratio: number;
+}): Mask {
+  return {
+    width: r.width,
+    height: r.height,
+    data: Uint8Array.from(r.data),
+    backend: r.backend,
+    subjectRatio: r.subject_ratio,
+  };
+}
+
+type RawMask = Parameters<typeof toMask>[0];
+
+/** Run background segmentation. Slow on the first call while the model loads. */
+export async function segmentBackground(
+  rgba: Uint8ClampedArray,
+  width: number,
+  height: number,
+): Promise<Mask> {
+  const r = await invoke<RawMask>("segment_background", {
+    rgba: Array.from(rgba),
+    width,
+    height,
+  });
+  return toMask(r);
+}
+
+export async function addMaskStroke(stroke: {
+  mode: "keep" | "erase";
+  radius: number;
+  feather: number;
+  points: Array<[number, number]>;
+}): Promise<Mask> {
+  return toMask(await invoke<RawMask>("add_mask_stroke", { stroke }));
+}
+
+export async function undoMaskStroke(): Promise<Mask> {
+  return toMask(await invoke<RawMask>("undo_mask_stroke"));
+}
+
+export async function resetMaskEdits(): Promise<Mask> {
+  return toMask(await invoke<RawMask>("reset_mask_edits"));
+}
+
+/** Tighten or loosen the mask edge. 128 leaves the model's own edge alone. */
+export async function setMaskThreshold(threshold: number): Promise<Mask> {
+  return toMask(await invoke<RawMask>("set_mask_threshold", { threshold }));
+}
+
+export async function maskStrokeCount(): Promise<number> {
+  return invoke<number>("mask_stroke_count");
+}
+
+export async function clearMask(): Promise<void> {
+  return invoke<void>("clear_mask");
+}
+
+export async function maskSize(): Promise<number> {
+  return invoke<number>("mask_size");
+}
+
+export async function backgroundUniformity(
+  rgba: Uint8ClampedArray,
+  width: number,
+  height: number,
+): Promise<number | null> {
+  return invoke<number | null>("background_uniformity", {
+    rgba: Array.from(rgba),
+    width,
+    height,
+  });
+}
+
+/* Specs and validation. */
+
+export interface SpecSummary {
+  id: string;
+  name: string;
+  widthMm: number;
+  heightMm: number;
+  headHeightMm: number | null;
+  minDpi: number;
+  defaultCount: number;
+  cutMarks: boolean;
+  backgroundRgb: [number, number, number] | null;
+  freeMode: boolean;
+}
+
+export async function listSpecs(lang = "hr"): Promise<SpecSummary[]> {
+  const raw = await invoke<
+    Array<{
+      id: string;
+      name: string;
+      width_mm: number;
+      height_mm: number;
+      head_height_mm: number | null;
+      min_dpi: number;
+      default_count: number;
+      cut_marks: boolean;
+      background_rgb: [number, number, number] | null;
+      free_mode: boolean;
+    }>
+  >("list_specs", { lang });
+
+  return raw.map((s) => ({
+    id: s.id,
+    name: s.name,
+    widthMm: s.width_mm,
+    heightMm: s.height_mm,
+    headHeightMm: s.head_height_mm,
+    minDpi: s.min_dpi,
+    defaultCount: s.default_count,
+    cutMarks: s.cut_marks,
+    backgroundRgb: s.background_rgb,
+    freeMode: s.free_mode,
+  }));
+}
+
+export type RuleStatus = "pass" | "warn" | "fail" | "not_checked";
+
+export interface FixHint {
+  kind: "set_head_height_mm" | "set_rotation_deg" | "set_dpi";
+  value: number;
+}
+
+export interface RuleResult {
+  ruleId: string;
+  status: RuleStatus;
+  severity: "error" | "warning";
+  messageKey: string;
+  params: Record<string, unknown>;
+  fixHint: FixHint | null;
+}
+
+export interface Validation {
+  results: RuleResult[];
+  /** True when something failed at error severity. */
+  blocking: boolean;
+}
+
+export interface ImageStats {
+  clippedShadows: number;
+  clippedHighlights: number;
+  sharpness: number | null;
+}
+
+export async function analyseImage(
+  rgba: Uint8ClampedArray,
+  width: number,
+  height: number,
+  face?: { x: number; y: number; width: number; height: number } | null,
+): Promise<ImageStats> {
+  const r = await invoke<{
+    clipped_shadows: number;
+    clipped_highlights: number;
+    sharpness: number | null;
+  }>("analyse_image", {
+    rgba: Array.from(rgba),
+    width,
+    height,
+    faceX: face ? Math.max(0, Math.round(face.x)) : null,
+    faceY: face ? Math.max(0, Math.round(face.y)) : null,
+    faceWidth: face ? Math.round(face.width) : null,
+    faceHeight: face ? Math.round(face.height) : null,
+  });
+  return {
+    clippedShadows: r.clipped_shadows,
+    clippedHighlights: r.clipped_highlights,
+    sharpness: r.sharpness,
+  };
+}
+
+export async function validatePhoto(req: {
+  specId: string;
+  headPx: number;
+  cropX: number;
+  cropY: number;
+  cropWidth: number;
+  cropHeight: number;
+  headCentreX: number;
+  headCentreY: number;
+  eyeDistancePx: number;
+  rollDeg: number;
+  dpi: number;
+  ageYears?: number | null;
+  backgroundStddev?: number | null;
+  sharpness?: number | null;
+  clippedShadows?: number | null;
+  clippedHighlights?: number | null;
+}): Promise<Validation> {
+  const r = await invoke<{
+    results: Array<{
+      rule_id: string;
+      status: RuleStatus;
+      severity: "error" | "warning";
+      message_key: string;
+      params: Record<string, unknown>;
+      fix_hint: FixHint | null;
+    }>;
+    blocking: boolean;
+  }>("validate_photo", {
+    req: {
+      spec_id: req.specId,
+      head_px: req.headPx,
+      crop_x: req.cropX,
+      crop_y: req.cropY,
+      crop_width: req.cropWidth,
+      crop_height: req.cropHeight,
+      head_centre_x: req.headCentreX,
+      head_centre_y: req.headCentreY,
+      eye_distance_px: req.eyeDistancePx,
+      roll_deg: req.rollDeg,
+      dpi: req.dpi,
+      age_years: req.ageYears ?? null,
+      background_stddev: req.backgroundStddev ?? null,
+      sharpness: req.sharpness ?? null,
+      clipped_shadows: req.clippedShadows ?? null,
+      clipped_highlights: req.clippedHighlights ?? null,
+    },
+  });
+
+  return {
+    blocking: r.blocking,
+    results: r.results.map((x) => ({
+      ruleId: x.rule_id,
+      status: x.status,
+      severity: x.severity,
+      messageKey: x.message_key,
+      params: x.params,
+      fixHint: x.fix_hint,
+    })),
+  };
 }
 
 export async function printSheet(args: {
@@ -367,6 +644,22 @@ export async function printSheet(args: {
             crop_width: args.photo.cropWidth,
             crop_height: args.photo.cropHeight,
             rotation_deg: args.photo.rotationDeg,
+            background: args.photo.background
+              ? {
+                  mask: Array.from(args.photo.background.mask),
+                  mask_width: args.photo.background.maskWidth,
+                  mask_height: args.photo.background.maskHeight,
+                  colour: args.photo.background.colour,
+                }
+              : null,
+            adjustments: args.photo.adjustments
+              ? {
+                  exposure_ev: args.photo.adjustments.exposureEv,
+                  contrast: args.photo.adjustments.contrast,
+                  temperature: args.photo.adjustments.temperature,
+                  tint: args.photo.adjustments.tint,
+                }
+              : null,
           }
         : null,
     },

@@ -70,7 +70,7 @@ fn every_invoked_command_is_registered() {
 fn every_error_key_has_a_translation() {
     let src = repo_root().join("src-tauri").join("src");
     // Every module that raises errors, not just commands.rs.
-    let sources: String = ["commands.rs", "face.rs"]
+    let sources: String = ["commands.rs", "face.rs", "background.rs", "spec.rs"]
         .iter()
         .map(|f| read(&src.join(f)))
         .collect::<Vec<_>>()
@@ -95,6 +95,43 @@ fn every_error_key_has_a_translation() {
         missing.is_empty(),
         "error keys with no Croatian translation: {missing:?}"
     );
+}
+
+/// Every message the rules engine can emit must have a Croatian translation.
+///
+/// The keys live in the domain crate rather than in a command module, so the
+/// error-key test above does not see them; without this a failed rule would
+/// render in the panel as the bare key.
+#[test]
+fn every_rule_message_has_a_translation() {
+    let rules_rs = read(
+        &repo_root()
+            .join("crates")
+            .join("domain")
+            .join("src")
+            .join("rules.rs"),
+    );
+    let i18n_ts = read(&repo_root().join("src").join("lib").join("i18n.ts"));
+
+    let mut keys = BTreeSet::new();
+    for (idx, _) in rules_rs.match_indices("\"rule.") {
+        let rest = &rules_rs[idx + 1..];
+        let Some(end) = rest.find('"') else { continue };
+        let key = &rest[..end];
+        // Skip prefixes used for `starts_with` assertions in the tests, which
+        // are not keys anyone looks up.
+        if key.ends_with('.') {
+            continue;
+        }
+        keys.insert(key.to_string());
+    }
+
+    assert!(!keys.is_empty(), "no rule message keys found");
+    let missing: Vec<_> = keys
+        .iter()
+        .filter(|k| !i18n_ts.contains(&format!("\"{k}\"")))
+        .collect();
+    assert!(missing.is_empty(), "rule keys with no translation: {missing:?}");
 }
 
 /// Placeholders in a translation must be supplied by the code that raises it.
