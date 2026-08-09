@@ -1,9 +1,13 @@
 import { useEffect, useRef, useState } from "react";
-import type { CropResult, Layout } from "../lib/ipc";
+import type { CropResult, Layout, Placement } from "../lib/ipc";
 import { fitScale, mm } from "../lib/units";
 
 interface Props {
-  layout: Layout | null;
+  /**
+   * Placements to draw. A mixed sheet supplies them directly, since its copies
+   * differ in size and so do not form a `Layout`.
+   */
+  layout: Layout | { placements: Placement[] } | null;
   paperWidthMm: number;
   paperHeightMm: number;
   /** Hardware margin drawn as a dashed guide, so the user sees the dead zone. */

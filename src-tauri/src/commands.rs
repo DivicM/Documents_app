@@ -178,6 +178,90 @@ pub fn solve_layout(req: LayoutRequest) -> CmdResult<LayoutDto> {
     })
 }
 
+/// One photo size and how many copies of it belong on the mixed sheet.
+#[derive(Debug, Clone, Copy, Deserialize)]
+pub struct PhotoGroupRequest {
+    pub width_mm: f64,
+    pub height_mm: f64,
+    pub count: u32,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct MixedLayoutRequest {
+    pub paper_width_mm: f64,
+    pub paper_height_mm: f64,
+    pub groups: Vec<PhotoGroupRequest>,
+    pub margin_mm: f64,
+    pub gutter_mm: f64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct GroupedPlacementDto {
+    pub x_mm: f64,
+    pub y_mm: f64,
+    pub width_mm: f64,
+    pub height_mm: f64,
+    pub rotated: bool,
+    /// Index into the requested groups, so the UI can colour or label them.
+    pub group: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub struct MixedLayoutDto {
+    pub placements: Vec<GroupedPlacementDto>,
+    /// Copies of each group that did not fit. Reported rather than dropped.
+    pub unplaced: Vec<u32>,
+}
+
+fn to_groups(groups: &[PhotoGroupRequest]) -> Vec<domain::layout::PhotoGroup> {
+    groups
+        .iter()
+        .map(|g| domain::layout::PhotoGroup {
+            size: SizeMm::new(g.width_mm, g.height_mm),
+            count: g.count,
+        })
+        .collect()
+}
+
+fn map_layout_error(e: domain::layout::LayoutError) -> UiError {
+    match e {
+        domain::layout::LayoutError::PhotoTooLarge => UiError::new("error.layout.photo_too_large"),
+        domain::layout::LayoutError::NoUsableArea => UiError::new("error.layout.no_usable_area"),
+        domain::layout::LayoutError::InvalidDimensions => {
+            UiError::new("error.layout.invalid_dimensions")
+        }
+    }
+}
+
+/// Arrange several photo sizes on one sheet (§7).
+#[tauri::command]
+pub fn solve_mixed_layout(req: MixedLayoutRequest) -> CmdResult<MixedLayoutDto> {
+    let groups = to_groups(&req.groups);
+    let sheet = domain::layout::solve_mixed(
+        SizeMm::new(req.paper_width_mm, req.paper_height_mm),
+        &groups,
+        req.margin_mm,
+        req.gutter_mm,
+    )
+    .map_err(map_layout_error)?;
+
+    Ok(MixedLayoutDto {
+        placements: sheet
+            .placements
+            .iter()
+            .map(|g| GroupedPlacementDto {
+                x_mm: g.placement.x_mm,
+                y_mm: g.placement.y_mm,
+                width_mm: g.placement.size.width,
+                height_mm: g.placement.size.height,
+                rotated: g.placement.orientation == domain::layout::Orientation::Landscape,
+                group: g.group,
+            })
+            .collect(),
+        unplaced: sheet.unplaced,
+    })
+}
+
 #[derive(Debug, Serialize)]
 pub struct ResolutionCheckDto {
     pub required_px_w: u32,
@@ -449,6 +533,136 @@ pub struct PrintSheetRequest {
     pub photo: Option<PhotoPayload>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct PrintMixedRequest {
+    pub printer: String,
+    pub paper_width_mm: f64,
+    pub paper_height_mm: f64,
+    pub groups: Vec<PhotoGroupRequest>,
+    pub margin_mm: f64,
+    pub gutter_mm: f64,
+    pub photo: Option<PhotoPayload>,
+}
+
+/// Apply tone and background to the source pixels, in the order the preview uses.
+///
+/// Shared by both print paths so a change here cannot make the mixed sheet
+/// composite differently from the ordinary one.
+#[cfg(windows)]
+fn prepared_pixels(p: &PhotoPayload) -> CmdResult<Vec<u8>> {
+    let expected = p.width as usize * p.height as usize * 4;
+    if p.rgba.len() != expected {
+        return Err(UiError::with(
+            "error.image.size_mismatch",
+            serde_json::json!({ "expected": expected, "got": p.rgba.len() }),
+        ));
+    }
+
+    // Order matters and must match the preview: tone first, then background.
+    // Adjusting after replacement would shift the background colour the user
+    // picked.
+    let mut pixels = p.rgba.clone();
+    if let Some(adj) = &p.adjustments {
+        domain::adjust::apply_adjustments(&mut pixels, adj);
+    }
+    if let Some(bg) = &p.background {
+        let mask = domain::mask::AlphaMask::new(bg.mask_width, bg.mask_height, bg.mask.clone())
+            .ok_or_else(|| UiError::new("error.mask.size_mismatch"))?;
+        domain::mask::composite_background(&mut pixels, p.width, p.height, &mask, bg.colour);
+    }
+    Ok(pixels)
+}
+
+/// Print a sheet holding several photo sizes at once (§7).
+#[tauri::command]
+pub fn print_mixed_sheet(req: PrintMixedRequest) -> CmdResult<u32> {
+    #[cfg(windows)]
+    {
+        use domain::layout::Placement;
+        use domain::render::{
+            render_mixed_sheet, render_sheet, PhotoSource, PrintableOrigin, RenderParams,
+        };
+        use domain::resample::ImageRef;
+
+        let paper = SizeMm::new(req.paper_width_mm, req.paper_height_mm);
+        let groups = to_groups(&req.groups);
+        let mixed = domain::layout::solve_mixed(paper, &groups, req.margin_mm, req.gutter_mm)
+            .map_err(map_layout_error)?;
+
+        if mixed.placements.is_empty() {
+            return Err(UiError::new("error.print.nothing_to_print"));
+        }
+
+        let b = backend();
+        let dpi = b.device_dpi(&req.printer).map_err(|e| {
+            UiError::with("error.printer.dpi_failed", serde_json::json!({ "detail": e.to_string() }))
+        })?;
+        let m = b
+            .hardware_margins_mm(
+                &req.printer,
+                PaperSize { width_mm: req.paper_width_mm, height_mm: req.paper_height_mm },
+            )
+            .unwrap_or(platform::print::Margins::ZERO);
+
+        let printable = SizeMm::new(
+            req.paper_width_mm - m.left_mm - m.right_mm,
+            req.paper_height_mm - m.top_mm - m.bottom_mm,
+        );
+
+        let mut params = RenderParams::new(dpi.x as f64, dpi.y as f64);
+        params.origin = PrintableOrigin { left_mm: m.left_mm, top_mm: m.top_mm };
+        params.calibration =
+            calibration_for(&req.printer, req.paper_width_mm, req.paper_height_mm, false);
+
+        let placements: Vec<Placement> =
+            mixed.placements.iter().map(|g| g.placement).collect();
+
+        let raster = match &req.photo {
+            Some(p) => {
+                let pixels = prepared_pixels(p)?;
+                let image = ImageRef::new(&pixels, p.width, p.height)
+                    .ok_or_else(|| UiError::new("error.image.decode_failed"))?;
+                let source = PhotoSource {
+                    image,
+                    crop_x: p.crop_x,
+                    crop_y: p.crop_y,
+                    crop_width: p.crop_width,
+                    crop_height: p.crop_height,
+                    rotation_deg: p.rotation_deg,
+                };
+                render_mixed_sheet(&placements, printable, &params, &source)
+            }
+            None => {
+                // Plain rectangles, for checking geometry without photo paper.
+                let sheet = domain::layout::Sheet {
+                    placements,
+                    orientation: domain::layout::Orientation::Portrait,
+                    capacity_per_sheet: mixed.placements.len() as u32,
+                    sheets_needed: 1,
+                };
+                render_sheet(&sheet, printable, &params)
+            }
+        };
+
+        let job = PrintJob {
+            printer: req.printer.clone(),
+            pixels: raster.pixels,
+            width_px: raster.width_px,
+            height_px: raster.height_px,
+            document_name: "Fotografije za dokumente".into(),
+        };
+
+        b.print_raster(&job).map(|id| id.0).map_err(|e| {
+            UiError::with("error.print.failed", serde_json::json!({ "detail": e.to_string() }))
+        })
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = req;
+        Err(UiError::new("error.platform.unsupported"))
+    }
+}
+
 /// Print the laid-out sheet, with the stored calibration applied.
 #[tauri::command]
 pub fn print_sheet(req: PrintSheetRequest) -> CmdResult<u32> {
@@ -497,33 +711,7 @@ pub fn print_sheet(req: PrintSheetRequest) -> CmdResult<u32> {
 
         let raster = match &req.photo {
             Some(p) => {
-                let expected = p.width as usize * p.height as usize * 4;
-                if p.rgba.len() != expected {
-                    return Err(UiError::with(
-                        "error.image.size_mismatch",
-                        serde_json::json!({ "expected": expected, "got": p.rgba.len() }),
-                    ));
-                }
-                // Order matters and must match the preview: tone first, then
-                // background, then crop. Adjusting after replacement would
-                // shift the background colour the user picked.
-                let mut pixels = p.rgba.clone();
-                if let Some(adj) = &p.adjustments {
-                    domain::adjust::apply_adjustments(&mut pixels, adj);
-                }
-                if let Some(bg) = &p.background {
-                    let mask =
-                        domain::mask::AlphaMask::new(bg.mask_width, bg.mask_height, bg.mask.clone())
-                            .ok_or_else(|| UiError::new("error.mask.size_mismatch"))?;
-                    domain::mask::composite_background(
-                        &mut pixels,
-                        p.width,
-                        p.height,
-                        &mask,
-                        bg.colour,
-                    );
-                }
-
+                let pixels = prepared_pixels(p)?;
                 let image = ImageRef::new(&pixels, p.width, p.height)
                     .ok_or_else(|| UiError::new("error.image.decode_failed"))?;
                 let source = PhotoSource {

@@ -69,10 +69,15 @@ fn every_invoked_command_is_registered() {
 #[test]
 fn every_error_key_has_a_translation() {
     let src = repo_root().join("src-tauri").join("src");
-    // Every module that raises errors, not just commands.rs.
-    let sources: String = ["commands.rs", "face.rs", "background.rs", "spec.rs"]
-        .iter()
-        .map(|f| read(&src.join(f)))
+    // Read every module in the directory rather than a hand-kept list: a new
+    // command module would otherwise escape this check silently, which is the
+    // exact failure the test exists to prevent.
+    let sources: String = std::fs::read_dir(&src)
+        .expect("cannot read src-tauri/src")
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "rs"))
+        .map(|p| read(&p))
         .collect::<Vec<_>>()
         .join("\n");
     let i18n_ts = read(&repo_root().join("src").join("lib").join("i18n.ts"));

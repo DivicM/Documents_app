@@ -1,6 +1,7 @@
 mod background;
 mod commands;
 mod face;
+mod presets;
 mod spec;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -18,6 +19,12 @@ pub fn run() {
             commands::save_calibration,
             commands::print_calibration_square,
             commands::print_sheet,
+            commands::solve_mixed_layout,
+            commands::print_mixed_sheet,
+            presets::list_presets,
+            presets::save_preset,
+            presets::load_preset,
+            presets::delete_preset,
             face::detect_face,
             face::compute_crop,
             background::segment_background,

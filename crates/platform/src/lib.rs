@@ -2,6 +2,7 @@
 //! so the layers above it stay testable without a device.
 
 pub mod calibration;
+pub mod presets;
 pub mod print;
 
 #[cfg(windows)]
@@ -11,6 +12,7 @@ pub mod print_win;
 pub use print_win::WindowsPrintBackend;
 
 pub use calibration::{Calibration, CalibrationError, CalibrationKey, CalibrationStore};
+pub use presets::{Config, Preset, PresetError, PresetStore};
 pub use print::{
     DeviceDpi, JobId, Margins, PaperSize, PrintBackend, PrintError, PrintJob, PrinterInfo,
 };

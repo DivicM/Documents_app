@@ -214,6 +214,19 @@ button.small {
   font-size: 13px;
 }
 
+/* One format in the mixed sheet: a label above its width/height/count inputs. */
+.group-row {
+  border-left: 2px solid #dfe4ea;
+  padding-left: 8px;
+  margin-bottom: 4px;
+}
+
+/* Three numbers side by side need to stay narrow enough to fit the column. */
+.group-row .row input[type="number"] {
+  min-width: 0;
+  flex: 1;
+}
+
 .numeric {
   min-width: 46px;
   text-align: right;

@@ -610,6 +610,240 @@ export async function validatePhoto(req: {
   };
 }
 
+/* Mixed sheets: several photo sizes on one piece of paper. */
+
+export interface PhotoGroup {
+  widthMm: number;
+  heightMm: number;
+  count: number;
+}
+
+export interface GroupedPlacement extends Placement {
+  /** Index into the requested groups. */
+  group: number;
+}
+
+export interface MixedLayout {
+  placements: GroupedPlacement[];
+  /** Copies of each group that did not fit, by group index. */
+  unplaced: number[];
+}
+
+function toGroups(groups: PhotoGroup[]) {
+  return groups.map((g) => ({
+    width_mm: g.widthMm,
+    height_mm: g.heightMm,
+    count: g.count,
+  }));
+}
+
+export async function solveMixedLayout(req: {
+  paperWidthMm: number;
+  paperHeightMm: number;
+  groups: PhotoGroup[];
+  marginMm: number;
+  gutterMm: number;
+}): Promise<MixedLayout> {
+  const r = await invoke<{
+    placements: Array<{
+      x_mm: number;
+      y_mm: number;
+      width_mm: number;
+      height_mm: number;
+      rotated: boolean;
+      group: number;
+    }>;
+    unplaced: number[];
+  }>("solve_mixed_layout", {
+    req: {
+      paper_width_mm: req.paperWidthMm,
+      paper_height_mm: req.paperHeightMm,
+      groups: toGroups(req.groups),
+      margin_mm: req.marginMm,
+      gutter_mm: req.gutterMm,
+    },
+  });
+
+  return {
+    placements: r.placements.map((p) => ({
+      xMm: p.x_mm,
+      yMm: p.y_mm,
+      widthMm: p.width_mm,
+      heightMm: p.height_mm,
+      rotated: p.rotated,
+      group: p.group,
+    })),
+    unplaced: r.unplaced,
+  };
+}
+
+/** Serialise a photo payload for either print command. */
+function photoToWire(photo: PhotoPayload) {
+  return {
+    rgba: Array.from(photo.rgba),
+    width: photo.width,
+    height: photo.height,
+    crop_x: photo.cropX,
+    crop_y: photo.cropY,
+    crop_width: photo.cropWidth,
+    crop_height: photo.cropHeight,
+    rotation_deg: photo.rotationDeg,
+    background: photo.background
+      ? {
+          mask: Array.from(photo.background.mask),
+          mask_width: photo.background.maskWidth,
+          mask_height: photo.background.maskHeight,
+          colour: photo.background.colour,
+        }
+      : null,
+    adjustments: photo.adjustments
+      ? {
+          exposure_ev: photo.adjustments.exposureEv,
+          contrast: photo.adjustments.contrast,
+          temperature: photo.adjustments.temperature,
+          tint: photo.adjustments.tint,
+        }
+      : null,
+  };
+}
+
+export async function printMixedSheet(args: {
+  printer: string;
+  paperWidthMm: number;
+  paperHeightMm: number;
+  groups: PhotoGroup[];
+  marginMm: number;
+  gutterMm: number;
+  photo?: PhotoPayload | null;
+}): Promise<number> {
+  return invoke<number>("print_mixed_sheet", {
+    req: {
+      printer: args.printer,
+      paper_width_mm: args.paperWidthMm,
+      paper_height_mm: args.paperHeightMm,
+      groups: toGroups(args.groups),
+      margin_mm: args.marginMm,
+      gutter_mm: args.gutterMm,
+      photo: args.photo ? photoToWire(args.photo) : null,
+    },
+  });
+}
+
+/* Presets: named sets of settings, stored in config.toml. */
+
+export interface Preset {
+  specId: string;
+  photoWidthMm: number;
+  photoHeightMm: number;
+  headHeightMm: number;
+  paperId: string;
+  count: number;
+  marginMm: number;
+  gutterMm: number;
+  alignTopLeft: boolean;
+  cutMarks: boolean;
+  replaceBackground: boolean;
+  backgroundRgb: [number, number, number];
+  exposureEv: number;
+  contrast: number;
+  temperature: number;
+  tint: number;
+}
+
+export interface PresetSummary {
+  name: string;
+  savedAt: string;
+}
+
+interface RawPreset {
+  spec_id: string;
+  photo_width_mm: number;
+  photo_height_mm: number;
+  head_height_mm: number;
+  paper_id: string;
+  count: number;
+  margin_mm: number;
+  gutter_mm: number;
+  align_top_left: boolean;
+  cut_marks: boolean;
+  replace_background: boolean;
+  background_rgb: [number, number, number];
+  exposure_ev: number;
+  contrast: number;
+  temperature: number;
+  tint: number;
+}
+
+function fromRawPreset(r: RawPreset): Preset {
+  return {
+    specId: r.spec_id,
+    photoWidthMm: r.photo_width_mm,
+    photoHeightMm: r.photo_height_mm,
+    headHeightMm: r.head_height_mm,
+    paperId: r.paper_id,
+    count: r.count,
+    marginMm: r.margin_mm,
+    gutterMm: r.gutter_mm,
+    alignTopLeft: r.align_top_left,
+    cutMarks: r.cut_marks,
+    replaceBackground: r.replace_background,
+    backgroundRgb: r.background_rgb,
+    exposureEv: r.exposure_ev,
+    contrast: r.contrast,
+    temperature: r.temperature,
+    tint: r.tint,
+  };
+}
+
+function toRawPreset(p: Preset): RawPreset {
+  return {
+    spec_id: p.specId,
+    photo_width_mm: p.photoWidthMm,
+    photo_height_mm: p.photoHeightMm,
+    head_height_mm: p.headHeightMm,
+    paper_id: p.paperId,
+    count: p.count,
+    margin_mm: p.marginMm,
+    gutter_mm: p.gutterMm,
+    align_top_left: p.alignTopLeft,
+    cut_marks: p.cutMarks,
+    replace_background: p.replaceBackground,
+    background_rgb: p.backgroundRgb,
+    exposure_ev: p.exposureEv,
+    contrast: p.contrast,
+    temperature: p.temperature,
+    tint: p.tint,
+  };
+}
+
+function toSummaries(raw: Array<{ name: string; saved_at: string }>): PresetSummary[] {
+  return raw.map((s) => ({ name: s.name, savedAt: s.saved_at }));
+}
+
+export async function listPresets(): Promise<PresetSummary[]> {
+  return toSummaries(await invoke<Array<{ name: string; saved_at: string }>>("list_presets"));
+}
+
+export async function savePreset(name: string, preset: Preset): Promise<PresetSummary[]> {
+  return toSummaries(
+    await invoke<Array<{ name: string; saved_at: string }>>("save_preset", {
+      name,
+      preset: toRawPreset(preset),
+      nowRfc3339: new Date().toISOString(),
+    }),
+  );
+}
+
+export async function loadPreset(name: string): Promise<Preset> {
+  return fromRawPreset(await invoke<RawPreset>("load_preset", { name }));
+}
+
+export async function deletePreset(name: string): Promise<PresetSummary[]> {
+  return toSummaries(
+    await invoke<Array<{ name: string; saved_at: string }>>("delete_preset", { name }),
+  );
+}
+
 export async function printSheet(args: {
   printer: string;
   paperWidthMm: number;
@@ -634,34 +868,7 @@ export async function printSheet(args: {
       margin_mm: args.marginMm,
       gutter_mm: args.gutterMm,
       align_top_left: args.alignTopLeft,
-      photo: args.photo
-        ? {
-            rgba: Array.from(args.photo.rgba),
-            width: args.photo.width,
-            height: args.photo.height,
-            crop_x: args.photo.cropX,
-            crop_y: args.photo.cropY,
-            crop_width: args.photo.cropWidth,
-            crop_height: args.photo.cropHeight,
-            rotation_deg: args.photo.rotationDeg,
-            background: args.photo.background
-              ? {
-                  mask: Array.from(args.photo.background.mask),
-                  mask_width: args.photo.background.maskWidth,
-                  mask_height: args.photo.background.maskHeight,
-                  colour: args.photo.background.colour,
-                }
-              : null,
-            adjustments: args.photo.adjustments
-              ? {
-                  exposure_ev: args.photo.adjustments.exposureEv,
-                  contrast: args.photo.adjustments.contrast,
-                  temperature: args.photo.adjustments.temperature,
-                  tint: args.photo.adjustments.tint,
-                }
-              : null,
-          }
-        : null,
+      photo: args.photo ? photoToWire(args.photo) : null,
     },
   });
 }

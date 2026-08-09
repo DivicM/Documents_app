@@ -101,6 +101,29 @@ export default function App() {
   const [temperature, setTemperature] = useState(0);
   const [tint, setTint] = useState(0);
 
+  // Presets.
+  const [presets, setPresets] = useState<ipc.PresetSummary[]>([]);
+  const [presetName, setPresetName] = useState("");
+
+  // Mixed sheet: several formats on one piece of paper.
+  const [mixedMode, setMixedMode] = useState(false);
+  const [groups, setGroups] = useState<ipc.PhotoGroup[]>([
+    { widthMm: 35, heightMm: 45, count: 2 },
+    { widthMm: 30, heightMm: 35, count: 4 },
+  ]);
+  const [mixedLayout, setMixedLayout] = useState<ipc.MixedLayout | null>(null);
+
+  // Auto-print, gated on validation passing.
+  const [autoPrint, setAutoPrint] = useState(false);
+  /**
+   * Prevents the same photo printing twice.
+   *
+   * Auto-print fires from an effect that re-runs whenever validation changes,
+   * and validation changes on every slider nudge. Without a latch a compliant
+   * photo would print on each one.
+   */
+  const autoPrintedFor = useRef<string | null>(null);
+
   // Undo/redo over edit parameters. Snapshots are cheap because they hold
   // numbers, not pixels.
   const [history, setHistory] = useState<History<EditState>>(() =>
@@ -205,6 +228,48 @@ export default function App() {
     },
     [specs],
   );
+
+  // Load the saved presets once.
+  useEffect(() => {
+    ipc
+      .listPresets()
+      .then(setPresets)
+      .catch((e) => setError(formatError(e)));
+  }, []);
+
+  // Recompute the mixed layout whenever the groups or paper change.
+  useEffect(() => {
+    if (!mixedMode) {
+      setMixedLayout(null);
+      return;
+    }
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const result = await ipc.solveMixedLayout({
+          paperWidthMm: paper.widthMm,
+          paperHeightMm: paper.heightMm,
+          groups,
+          marginMm,
+          gutterMm,
+        });
+        if (!cancelled) {
+          setMixedLayout(result);
+          setError(null);
+        }
+      } catch (e) {
+        if (!cancelled) {
+          setMixedLayout(null);
+          setError(formatError(e));
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [mixedMode, groups, paper.widthMm, paper.heightMm, marginMm, gutterMm]);
 
   // Printer capabilities and calibration both depend on printer + paper.
   useEffect(() => {
@@ -817,54 +882,224 @@ export default function App() {
     }
   };
 
-  const onPrintSheet = async () => {
-    if (!selectedPrinter || !layout) return;
+  /**
+   * The photo payload for printing, or null when there is nothing to composite.
+   *
+   * Shared by the manual, mixed and automatic print paths so all three send
+   * identical pixels.
+   */
+  const buildPhotoPayload = useCallback((): ipc.PhotoPayload | null => {
+    const px = imagePixels.current;
+    if (!px || !crop) return null;
+    return {
+      rgba: px.data,
+      width: px.w,
+      height: px.h,
+      cropX: crop.rect.x,
+      cropY: crop.rect.y,
+      cropWidth: crop.rect.width,
+      cropHeight: crop.rect.height,
+      rotationDeg,
+      background:
+        replaceBackground && mask
+          ? {
+              mask: mask.data,
+              maskWidth: mask.width,
+              maskHeight: mask.height,
+              colour: bgColour,
+            }
+          : null,
+      adjustments: ipc.isNeutral(adjustments) ? null : adjustments,
+    };
+  }, [crop, rotationDeg, replaceBackground, mask, bgColour, adjustments]);
+
+  const onPrintSheet = useCallback(async () => {
+    if (!selectedPrinter) return;
     setStatus(null);
     setError(null);
     try {
       // Print the photo when one is loaded and its crop is valid; otherwise
       // fall back to plain rectangles so the layout can still be checked.
-      const px = imagePixels.current;
-      const photo =
-        px && crop
-          ? {
-              rgba: px.data,
-              width: px.w,
-              height: px.h,
-              cropX: crop.rect.x,
-              cropY: crop.rect.y,
-              cropWidth: crop.rect.width,
-              cropHeight: crop.rect.height,
-              rotationDeg,
-              background:
-                replaceBackground && mask
-                  ? {
-                      mask: mask.data,
-                      maskWidth: mask.width,
-                      maskHeight: mask.height,
-                      colour: bgColour,
-                    }
-                  : null,
-              adjustments: ipc.isNeutral(adjustments) ? null : adjustments,
-            }
-          : null;
+      const photo = buildPhotoPayload();
 
-      const jobId = await ipc.printSheet({
-        printer: selectedPrinter,
-        paperWidthMm: paper.widthMm,
-        paperHeightMm: paper.heightMm,
+      const jobId = mixedMode
+        ? await ipc.printMixedSheet({
+            printer: selectedPrinter,
+            paperWidthMm: paper.widthMm,
+            paperHeightMm: paper.heightMm,
+            groups,
+            marginMm,
+            gutterMm,
+            photo,
+          })
+        : await ipc.printSheet({
+            printer: selectedPrinter,
+            paperWidthMm: paper.widthMm,
+            paperHeightMm: paper.heightMm,
+            photoWidthMm,
+            photoHeightMm,
+            count,
+            marginMm,
+            gutterMm,
+            alignTopLeft,
+            photo,
+          });
+      setStatus(t("print.sent", { jobId }));
+      return jobId;
+    } catch (e) {
+      setError(formatError(e));
+      return null;
+    }
+  }, [
+    selectedPrinter,
+    buildPhotoPayload,
+    mixedMode,
+    paper.widthMm,
+    paper.heightMm,
+    groups,
+    photoWidthMm,
+    photoHeightMm,
+    count,
+    marginMm,
+    gutterMm,
+    alignTopLeft,
+  ]);
+
+  /**
+   * Identifies the photo-and-settings combination currently on screen.
+   *
+   * Auto-print latches on this, so changing anything that affects the output
+   * arms it again while a slider nudge that changes nothing does not.
+   */
+  const autoPrintKey = useMemo(() => {
+    if (!crop) return null;
+    return JSON.stringify([
+      crop.rect,
+      rotationDeg,
+      photoWidthMm,
+      photoHeightMm,
+      count,
+      paper.widthMm,
+      paper.heightMm,
+      marginMm,
+      gutterMm,
+      mixedMode ? groups : null,
+      replaceBackground ? bgColour : null,
+      adjustments,
+    ]);
+  }, [
+    crop,
+    rotationDeg,
+    photoWidthMm,
+    photoHeightMm,
+    count,
+    paper.widthMm,
+    paper.heightMm,
+    marginMm,
+    gutterMm,
+    mixedMode,
+    groups,
+    replaceBackground,
+    bgColour,
+    adjustments,
+  ]);
+
+  /**
+   * Print automatically once every measurable rule passes.
+   *
+   * Blocking on a failure is deliberate: photo paper is the expensive part, and
+   * a sheet that fails the spec is wasted. The manual button stays available,
+   * so the user can override this at any time.
+   */
+  useEffect(() => {
+    if (!autoPrint || !selectedPrinter || !autoPrintKey) return;
+    if (!specId || !validation) return;
+    if (validation.blocking) return;
+    if (autoPrintedFor.current === autoPrintKey) return;
+
+    autoPrintedFor.current = autoPrintKey;
+    void (async () => {
+      const jobId = await onPrintSheet();
+      if (jobId !== null && jobId !== undefined) {
+        setStatus(t("autoprint.done", { jobId }));
+      }
+    })();
+  }, [autoPrint, selectedPrinter, autoPrintKey, specId, validation, onPrintSheet]);
+
+  const onSavePreset = async () => {
+    setStatus(null);
+    setError(null);
+    try {
+      const list = await ipc.savePreset(presetName, {
+        specId,
         photoWidthMm,
         photoHeightMm,
+        headHeightMm,
+        paperId,
         count,
         marginMm,
         gutterMm,
         alignTopLeft,
-        photo,
+        cutMarks,
+        replaceBackground,
+        backgroundRgb: bgColour,
+        exposureEv,
+        contrast,
+        temperature,
+        tint,
       });
-      setStatus(t("print.sent", { jobId }));
+      setPresets(list);
+      setStatus(t("preset.saved", { name: presetName.trim() }));
     } catch (e) {
       setError(formatError(e));
     }
+  };
+
+  const onLoadPreset = async (name: string) => {
+    if (!name) return;
+    setStatus(null);
+    setError(null);
+    try {
+      const p = await ipc.loadPreset(name);
+      // Applied through the same setters the controls use, so undo/redo records
+      // loading a preset as one ordinary edit.
+      setSpecId(p.specId);
+      setPhotoWidthMm(p.photoWidthMm);
+      setPhotoHeightMm(p.photoHeightMm);
+      setHeadHeightMm(p.headHeightMm);
+      setPaperId(p.paperId);
+      setCount(p.count);
+      setMarginMm(p.marginMm);
+      setGutterMm(p.gutterMm);
+      setAlignTopLeft(p.alignTopLeft);
+      setCutMarks(p.cutMarks);
+      setReplaceBackground(p.replaceBackground);
+      setBgColour(p.backgroundRgb);
+      setExposureEv(p.exposureEv);
+      setContrast(p.contrast);
+      setTemperature(p.temperature);
+      setTint(p.tint);
+      setPresetName(name);
+      setStatus(t("preset.loaded", { name }));
+    } catch (e) {
+      setError(formatError(e));
+    }
+  };
+
+  const onDeletePreset = async (name: string) => {
+    if (!name || !window.confirm(t("preset.confirm_delete", { name }))) return;
+    setStatus(null);
+    setError(null);
+    try {
+      setPresets(await ipc.deletePreset(name));
+      setStatus(t("preset.deleted", { name }));
+    } catch (e) {
+      setError(formatError(e));
+    }
+  };
+
+  const updateGroup = (index: number, patch: Partial<ipc.PhotoGroup>) => {
+    setGroups((gs) => gs.map((g, i) => (i === index ? { ...g, ...patch } : g)));
   };
 
   const rotated = layout?.placements[0]?.rotated ?? false;
@@ -999,6 +1234,121 @@ export default function App() {
             />
             {t("layout.cut_marks")}
           </label>
+
+          <h2>{t("mixed.title")}</h2>
+          <p className="hint">{t("mixed.explain")}</p>
+
+          <label className="checkbox">
+            <input
+              type="checkbox"
+              checked={mixedMode}
+              onChange={(e) => setMixedMode(e.target.checked)}
+            />
+            {t("mixed.enable")}
+          </label>
+
+          {mixedMode && (
+            <>
+              {groups.map((g, i) => (
+                <div className="group-row" key={i}>
+                  <span className="anchor-label">{t("mixed.group", { n: i + 1 })}</span>
+                  <div className="row">
+                    <input
+                      type="number"
+                      min={5}
+                      step={0.5}
+                      value={g.widthMm}
+                      onChange={(e) => updateGroup(i, { widthMm: Number(e.target.value) })}
+                      title={t("format.width")}
+                    />
+                    <span className="numeric">×</span>
+                    <input
+                      type="number"
+                      min={5}
+                      step={0.5}
+                      value={g.heightMm}
+                      onChange={(e) => updateGroup(i, { heightMm: Number(e.target.value) })}
+                      title={t("format.height")}
+                    />
+                    <input
+                      type="number"
+                      min={1}
+                      max={100}
+                      value={g.count}
+                      onChange={(e) => updateGroup(i, { count: Number(e.target.value) })}
+                      title={t("format.count")}
+                    />
+                    <button
+                      type="button"
+                      className="small"
+                      disabled={groups.length <= 1}
+                      onClick={() => setGroups((gs) => gs.filter((_, j) => j !== i))}
+                    >
+                      {t("mixed.remove")}
+                    </button>
+                  </div>
+                </div>
+              ))}
+
+              <button
+                type="button"
+                className="small"
+                onClick={() =>
+                  setGroups((gs) => [...gs, { widthMm: 35, heightMm: 45, count: 2 }])
+                }
+              >
+                {t("mixed.add")}
+              </button>
+
+              {groups.length === 0 && <p className="hint">{t("mixed.empty")}</p>}
+            </>
+          )}
+
+          <h2>{t("preset.title")}</h2>
+          <p className="hint">{t("preset.explain")}</p>
+
+          <label>
+            {t("preset.name")}
+            <input
+              type="text"
+              value={presetName}
+              onChange={(e) => setPresetName(e.target.value)}
+              placeholder={t("preset.name")}
+            />
+          </label>
+
+          <button
+            type="button"
+            disabled={!presetName.trim()}
+            onClick={() => void onSavePreset()}
+          >
+            {t("preset.save")}
+          </button>
+          <p className="hint">{t("preset.overwrite_hint")}</p>
+
+          {presets.length === 0 ? (
+            <p className="hint">{t("preset.none")}</p>
+          ) : (
+            presets.map((p) => (
+              <div className="row" key={p.name}>
+                <span className="anchor-label">{p.name}</span>
+                <button
+                  type="button"
+                  className="small"
+                  onClick={() => void onLoadPreset(p.name)}
+                >
+                  {t("preset.load")}
+                </button>
+                <button
+                  type="button"
+                  className="small"
+                  onClick={() => void onDeletePreset(p.name)}
+                >
+                  {t("preset.delete")}
+                </button>
+              </div>
+            ))
+          )}
         </section>
 
         <section className="panel preview-panel">
@@ -1392,7 +1742,7 @@ export default function App() {
           <h2>{t("preview.sheet")}</h2>
 
           <SheetPreview
-            layout={layout}
+            layout={mixedMode ? mixedLayout : layout}
             paperWidthMm={paper.widthMm}
             paperHeightMm={paper.heightMm}
             hardwareMarginMm={
@@ -1411,11 +1761,31 @@ export default function App() {
             rotationDeg={rotationDeg}
           />
 
-          {layout && (
+          {!mixedMode && layout && (
             <div className="info">
               <div>{t("layout.capacity", { capacity: layout.capacityPerSheet })}</div>
               <div>{t("layout.sheets_needed", { sheets: layout.sheetsNeeded })}</div>
               {rotated && <div className="hint">{t("layout.rotated")}</div>}
+            </div>
+          )}
+
+          {mixedMode && mixedLayout && (
+            <div className="info">
+              <div>
+                {t("mixed.all_placed", { count: mixedLayout.placements.length })}
+              </div>
+              {/* What does not fit is named explicitly, never silently dropped. */}
+              {mixedLayout.unplaced.map((n, i) =>
+                n > 0 ? (
+                  <div className="hint" key={i}>
+                    {t("mixed.unplaced", {
+                      count: n,
+                      width: groups[i]?.widthMm ?? 0,
+                      height: groups[i]?.heightMm ?? 0,
+                    })}
+                  </div>
+                ) : null,
+              )}
             </div>
           )}
 
@@ -1467,10 +1837,43 @@ export default function App() {
             type="button"
             className="primary"
             onClick={() => void onPrintSheet()}
-            disabled={!selectedPrinter || !layout || layout.placements.length === 0}
+            disabled={
+              !selectedPrinter ||
+              (mixedMode
+                ? !mixedLayout || mixedLayout.placements.length === 0
+                : !layout || layout.placements.length === 0)
+            }
           >
             {t("print.button")}
           </button>
+
+          <h2>{t("autoprint.title")}</h2>
+          <p className="hint">{t("autoprint.explain")}</p>
+
+          <label className="checkbox">
+            <input
+              type="checkbox"
+              checked={autoPrint}
+              onChange={(e) => {
+                setAutoPrint(e.target.checked);
+                // Turning it on should print the photo already on screen, so
+                // clear the latch rather than waiting for the next edit.
+                if (e.target.checked) autoPrintedFor.current = null;
+              }}
+            />
+            {t("autoprint.enable")}
+          </label>
+
+          {autoPrint && !specId && <p className="hint">{t("autoprint.needs_spec")}</p>}
+          {autoPrint && specId && validation?.blocking && (
+            <p className="hint">{t("autoprint.blocked")}</p>
+          )}
+          {autoPrint && specId && !validation && (
+            <p className="hint">{t("autoprint.waiting")}</p>
+          )}
+          {autoPrint && specId && validation && !validation.blocking && (
+            <p className="hint">{t("autoprint.armed")}</p>
+          )}
 
           <h2>{t("calibration.title")}</h2>
           <p className="hint">{t("calibration.explain")}</p>

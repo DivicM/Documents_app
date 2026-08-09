@@ -245,15 +245,74 @@ pub fn render_sheet_with_photo(
 
     // Straight crops take the Lanczos path; only a tilted head pays for the
     // rotated sampler, which is bilinear.
-    let photo = if source.rotation_deg.abs() < 1e-6 {
+    let photo = sample_crop(source, sample_w, sample_h);
+
+    for p in &sheet.placements {
+        let r = placement_to_pixels(&correct(p, params, &cal), params.dpi_x, params.dpi_y);
+        blit(&mut raster, &photo, &r, rotate);
+    }
+
+    raster
+}
+
+/// Render a mixed sheet: several photo sizes, all from the same crop.
+///
+/// Unlike [`render_sheet_with_photo`], the placements are not all one size, so
+/// the single-resample trick does not apply. Each distinct pixel size is
+/// resampled once and reused for every placement that needs it, which keeps the
+/// common case — a handful of copies per size — down to one resample per size.
+pub fn render_mixed_sheet(
+    placements: &[Placement],
+    paper: SizeMm,
+    params: &RenderParams,
+    source: &PhotoSource<'_>,
+) -> Raster {
+    let cal = params.calibration.sanitised();
+    let mut raster = blank_sheet(paper, params);
+
+    // Keyed by the sampled bitmap size and whether it is turned, which is
+    // exactly what determines the pixels produced.
+    let mut cache: Vec<((u32, u32, bool), ImageBuf)> = Vec::new();
+
+    for p in placements {
+        let r = placement_to_pixels(&correct(p, params, &cal), params.dpi_x, params.dpi_y);
+        if r.width == 0 || r.height == 0 {
+            continue;
+        }
+
+        let rotate = p.orientation == Orientation::Landscape;
+        let (sample_w, sample_h) = if rotate { (r.height, r.width) } else { (r.width, r.height) };
+        let key = (sample_w, sample_h, rotate);
+
+        if !cache.iter().any(|(k, _)| *k == key) {
+            cache.push((key, sample_crop(source, sample_w, sample_h)));
+        }
+        let photo = cache
+            .iter()
+            .find(|(k, _)| *k == key)
+            .map(|(_, img)| img)
+            .expect("just inserted");
+
+        blit(&mut raster, photo, &r, rotate);
+    }
+
+    raster
+}
+
+/// Resample the source crop to an exact pixel size.
+///
+/// Split out so the single-size and mixed paths cannot drift apart: a change to
+/// how a crop is sampled applies to both.
+fn sample_crop(source: &PhotoSource<'_>, width: u32, height: u32) -> ImageBuf {
+    if source.rotation_deg.abs() < 1e-6 {
         resample_region(
             &source.image,
             source.crop_x,
             source.crop_y,
             source.crop_width,
             source.crop_height,
-            sample_w,
-            sample_h,
+            width,
+            height,
         )
     } else {
         resample_rotated(
@@ -263,17 +322,10 @@ pub fn render_sheet_with_photo(
             source.crop_width,
             source.crop_height,
             source.rotation_deg,
-            sample_w,
-            sample_h,
+            width,
+            height,
         )
-    };
-
-    for p in &sheet.placements {
-        let r = placement_to_pixels(&correct(p, params, &cal), params.dpi_x, params.dpi_y);
-        blit(&mut raster, &photo, &r, rotate);
     }
-
-    raster
 }
 
 /// Copy a resampled photo into one placement, rotating 90 degrees if needed.
@@ -572,6 +624,81 @@ mod tests {
         let source = PhotoSource::new(src, 0.0, 0.0, 100.0, 100.0);
         let raster = render_sheet_with_photo(
             &empty_sheet(),
+            SizeMm::new(20.0, 20.0),
+            &RenderParams::new(300.0, 300.0),
+            &source,
+        );
+        assert!(raster.pixels.iter().all(|&b| b == 0xFF));
+    }
+
+    #[test]
+    fn a_mixed_sheet_draws_every_size_at_its_own_size() {
+        // The bug this guards against: reusing one resampled bitmap for every
+        // placement, which would print the small format stretched to the large
+        // one's pixels.
+        use crate::layout::{solve_mixed, PhotoGroup};
+
+        let px = quadrant_image();
+        let src = ImageRef::new(&px, 100, 100).unwrap();
+        let paper = SizeMm::new(100.0, 150.0);
+        let groups = [
+            PhotoGroup { size: SizeMm::new(35.0, 45.0), count: 2 },
+            PhotoGroup { size: SizeMm::new(30.0, 35.0), count: 2 },
+        ];
+        let mixed = solve_mixed(paper, &groups, 3.0, 2.0).unwrap();
+        assert_eq!(mixed.unplaced, vec![0, 0]);
+
+        let placements: Vec<Placement> = mixed.placements.iter().map(|g| g.placement).collect();
+        let params = RenderParams::new(300.0, 300.0);
+        let source = PhotoSource::new(src, 0.0, 0.0, 100.0, 100.0);
+        let raster = render_mixed_sheet(&placements, paper, &params, &source);
+
+        // Each placement must carry the photo, sampled at its own dimensions.
+        for (i, p) in placements.iter().enumerate() {
+            let r = placement_to_pixels(p, 300.0, 300.0);
+            let o = raster.offset(r.x + 5, r.y + 5);
+            let bgra = &raster.pixels[o..o + 4];
+            assert!(
+                bgra[2] > 200 && bgra[1] < 60,
+                "placement {i} is not red at its top-left: {bgra:?}"
+            );
+        }
+
+        // And the two groups must genuinely differ in size on paper.
+        let sizes: std::collections::BTreeSet<(u32, u32)> = placements
+            .iter()
+            .map(|p| {
+                let r = placement_to_pixels(p, 300.0, 300.0);
+                (r.width, r.height)
+            })
+            .collect();
+        assert_eq!(sizes.len(), 2, "expected two distinct printed sizes, got {sizes:?}");
+    }
+
+    #[test]
+    fn a_mixed_sheet_with_one_size_matches_the_single_size_renderer() {
+        // The two paths must agree, or the mixed mode would quietly print
+        // differently from the normal mode on identical input.
+        let px = quadrant_image();
+        let src = ImageRef::new(&px, 100, 100).unwrap();
+        let paper = SizeMm::new(100.0, 100.0);
+        let p = placement(5.0, 5.0, 20.0, 20.0);
+        let params = RenderParams::new(300.0, 300.0);
+        let source = PhotoSource::new(src, 0.0, 0.0, 100.0, 100.0);
+
+        let single = render_sheet_with_photo(&sheet_with(p), paper, &params, &source);
+        let mixed = render_mixed_sheet(&[p], paper, &params, &source);
+
+        assert_eq!(single.pixels, mixed.pixels, "mixed and single renderers disagree");
+    }
+
+    #[test]
+    fn an_empty_mixed_sheet_stays_white() {
+        let px = quadrant_image();
+        let src = ImageRef::new(&px, 100, 100).unwrap();
+        let source = PhotoSource::new(src, 0.0, 0.0, 100.0, 100.0);
+        let raster = render_mixed_sheet(
+            &[],
             SizeMm::new(20.0, 20.0),
             &RenderParams::new(300.0, 300.0),
             &source,

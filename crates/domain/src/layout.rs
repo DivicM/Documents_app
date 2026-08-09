@@ -232,6 +232,24 @@ pub struct MixedSheet {
     pub unplaced: Vec<u32>,
 }
 
+/// Choose an orientation for one photo size on a shelf-packed sheet.
+///
+/// Mirrors what [`solve`] does for the single-size case: try the photo both ways
+/// and keep whichever packs more copies. Without this, a mixed sheet holding one
+/// size would fit fewer photos than the plain solver on identical input, which
+/// would look like the mixed mode losing paper.
+fn better_orientation(usable: SizeMm, size: SizeMm, gutter_mm: f64) -> (SizeMm, Orientation) {
+    let capacity = |s: SizeMm| {
+        fit_count(usable.width, s.width, gutter_mm) * fit_count(usable.height, s.height, gutter_mm)
+    };
+    // Portrait wins ties, so results stay deterministic and unsurprising.
+    if capacity(size.swapped()) > capacity(size) {
+        (size.swapped(), Orientation::Landscape)
+    } else {
+        (size, Orientation::Portrait)
+    }
+}
+
 /// Arrange several different photo sizes on one sheet (§7).
 ///
 /// Packs in shelves: a row is opened at the current height, photos are placed
@@ -241,7 +259,8 @@ pub struct MixedSheet {
 /// second sheet.
 ///
 /// Groups are placed largest first, since a big photo squeezed in after the
-/// small ones tends to find nowhere to go.
+/// small ones tends to find nowhere to go. Each group is rotated independently
+/// if that fits more of it.
 pub fn solve_mixed(
     paper: SizeMm,
     groups: &[PhotoGroup],
@@ -285,7 +304,7 @@ pub fn solve_mixed(
     let mut shelf_height = 0.0f64;
 
     for &gi in &order {
-        let size = groups[gi].size;
+        let (size, orientation) = better_orientation(usable, groups[gi].size, gutter_mm);
         while remaining[gi] > 0 {
             // Does it fit in the current shelf?
             let needs_gutter = cursor_x > margin_mm;
@@ -307,12 +326,7 @@ pub fn solve_mixed(
             }
 
             placements.push(GroupedPlacement {
-                placement: Placement {
-                    x_mm: x,
-                    y_mm: shelf_y,
-                    size,
-                    orientation: Orientation::Portrait,
-                },
+                placement: Placement { x_mm: x, y_mm: shelf_y, size, orientation },
                 group: gi,
             });
             cursor_x = x + size.width;
@@ -505,11 +519,51 @@ mod tests {
         let sheet = solve_mixed(paper, &groups, 3.0, 2.0).unwrap();
 
         for gp in &sheet.placements {
+            // A rotated group carries its dimensions swapped, so compare against
+            // whichever orientation the placement actually used.
             let expected = groups[gp.group].size;
-            assert_eq!(gp.placement.size, expected, "placement lost its group size");
+            let matches = match gp.placement.orientation {
+                Orientation::Portrait => gp.placement.size == expected,
+                Orientation::Landscape => gp.placement.size == expected.swapped(),
+            };
+            assert!(matches, "placement lost its group size: {gp:?}");
         }
         assert_eq!(sheet.placements.iter().filter(|g| g.group == 0).count(), 2);
         assert_eq!(sheet.placements.iter().filter(|g| g.group == 1).count(), 3);
+    }
+
+    #[test]
+    fn mixed_packing_rotates_when_that_fits_more() {
+        // The same case as rotating_beats_the_naive_unrotated_grid: 35x45 on
+        // 10x15 fits 6 upright but 8 turned. Mixed packing must not be worse
+        // than the plain solver on identical input.
+        let paper = SizeMm::new(100.0, 150.0);
+        let sheet = solve_mixed(paper, &[group(35.0, 45.0, 8)], 0.0, 0.0).unwrap();
+
+        assert_eq!(sheet.placements.len(), 8, "rotation was not tried");
+        assert_eq!(sheet.unplaced, vec![0]);
+        assert!(sheet
+            .placements
+            .iter()
+            .all(|p| p.placement.orientation == Orientation::Landscape));
+        assert_inside(&sheet, paper, 0.0);
+        assert_no_overlap(&sheet);
+    }
+
+    #[test]
+    fn mixed_rotation_never_places_fewer_than_the_plain_solver() {
+        // Guards the general property rather than one worked example.
+        let paper = SizeMm::new(100.0, 150.0);
+        for (w, h) in [(35.0, 45.0), (30.0, 35.0), (45.0, 35.0), (20.0, 60.0)] {
+            let plain = solve(&cfg((100.0, 150.0), (w, h), 100)).unwrap();
+            let mixed = solve_mixed(paper, &[group(w, h, 100)], 0.0, 0.0).unwrap();
+            assert!(
+                mixed.placements.len() as u32 >= plain.capacity_per_sheet,
+                "{w}x{h}: mixed fitted {} but the plain solver fits {}",
+                mixed.placements.len(),
+                plain.capacity_per_sheet
+            );
+        }
     }
 
     #[test]

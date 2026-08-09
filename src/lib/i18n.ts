@@ -209,6 +209,46 @@ const hr: Record<string, string> = {
   "preview.no_image": "Učitajte sliku da vidite kako će list izgledati.",
   "preview.no_crop": "Izrez nije moguć — prilagodite visinu glave ili točke.",
 
+  "error.preset.empty_name": "Predložak treba ime.",
+  "error.preset.name_too_long": "Ime predloška ne smije biti dulje od {max} znakova.",
+  "error.preset.not_found": "Predložak „{name}” ne postoji.",
+
+  "preset.title": "Predlošci",
+  "preset.explain":
+    "Spremite trenutne postavke (format, papir, rubove, pozadinu, svjetlinu) da ih ne morate ponovno namještati.",
+  "preset.name": "Ime predloška",
+  "preset.save": "Spremi postavke",
+  "preset.load": "Učitaj",
+  "preset.delete": "Obriši",
+  "preset.none": "Nema spremljenih predložaka",
+  "preset.saved": "Predložak „{name}” je spremljen.",
+  "preset.loaded": "Predložak „{name}” je učitan.",
+  "preset.deleted": "Predložak „{name}” je obrisan.",
+  "preset.confirm_delete": "Obrisati predložak „{name}”?",
+  "preset.overwrite_hint": "Ime koje već postoji zamijenit će stari predložak.",
+
+  "mixed.title": "Miješani list",
+  "mixed.enable": "Više formata na istom listu",
+  "mixed.explain":
+    "Stavite više različitih formata na isti papir — npr. 4 × osobna i 2 × putovnica.",
+  "mixed.add": "Dodaj format",
+  "mixed.remove": "Ukloni",
+  "mixed.group": "Format {n}",
+  "mixed.unplaced":
+    "Ne stane sve na jedan list: {count} kom. formata {width} × {height} mm ostaje.",
+  "mixed.all_placed": "Sve stane na jedan list ({count} kom.).",
+  "mixed.empty": "Dodajte barem jedan format.",
+
+  "autoprint.title": "Automatski ispis",
+  "autoprint.enable": "Ispiši čim fotografija zadovolji propis",
+  "autoprint.explain":
+    "Kad je uključeno, ispis kreće sam nakon što sve provjere prođu. Ne ispisuje se dok ima grešaka.",
+  "autoprint.blocked": "Automatski ispis čeka: fotografija ne zadovoljava propis.",
+  "autoprint.waiting": "Automatski ispis čeka provjeru.",
+  "autoprint.needs_spec": "Za automatski ispis odaberite dokument (ne „Prilagođeno”).",
+  "autoprint.done": "Automatski ispisano (job {jobId}).",
+  "autoprint.armed": "Automatski ispis je spreman — ispisat će se čim sve prođe.",
+
   "disclaimer":
     "Provjeravaju se samo mjerljivi kriteriji. Službenik može odbiti fotografiju i iz razloga koje program ne mjeri.",
 };
