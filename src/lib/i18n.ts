@@ -9,16 +9,13 @@ type Params = Record<string, string | number>;
 const hr: Record<string, string> = {
   "app.title": "Fotografije za dokumente",
 
-  "step.source": "Izvor",
   "step.format": "Format",
   "step.layout": "Raspored",
   "step.print": "Ispis",
 
-  "format.custom": "Prilagođeno",
   "format.width": "Širina (mm)",
   "format.height": "Visina (mm)",
   "format.count": "Broj kopija",
-  "format.dpi": "DPI",
 
   "paper.label": "Papir",
   "paper.10x15": "10 × 15 cm",
@@ -47,19 +44,13 @@ const hr: Record<string, string> = {
   "calibration.measured_x": "Izmjerena širina (mm)",
   "calibration.measured_y": "Izmjerena visina (mm)",
   "calibration.save": "2. Spremi kalibraciju",
-  "calibration.recalibrate": "Rekalibriraj",
   "calibration.explain":
     "Ispišite kvadrat, izmjerite ga ravnalom i upišite stvarne mjere. Aplikacija će ispraviti razliku pri svakom sljedećem ispisu.",
   "calibration.correction": "Ispravak: {x} % vodoravno, {y} % okomito",
-  "calibration.applies_to": "Vrijedi za: {printer}, {paper}",
   "calibration.saved": "Kalibracija spremljena.",
 
   "print.button": "Ispiši",
   "print.sent": "Poslano na printer (job {jobId})",
-
-  "resolution.insufficient":
-    "Za {targetW} × {targetH} mm na {dpi} DPI treba {reqW} × {reqH} px, a slika ima {srcW} × {srcH} px.",
-  "resolution.max_dpi": "Bez povećavanja moguće je najviše {dpi} DPI.",
 
   "error.printer.list_failed": "Nije moguće dohvatiti popis printera. ({detail})",
   "error.printer.dpi_failed": "Nije moguće pročitati rezoluciju printera. ({detail})",

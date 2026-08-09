@@ -55,15 +55,6 @@ export interface Calibration {
   calibratedAt: string;
 }
 
-export interface ResolutionCheck {
-  requiredPxW: number;
-  requiredPxH: number;
-  sourcePxW: number;
-  sourcePxH: number;
-  wouldUpscale: boolean;
-  maxLosslessDpi: number;
-}
-
 /* Rust uses snake_case on the wire; these map to and from camelCase. */
 
 export async function listPrinters(): Promise<Printer[]> {
@@ -134,37 +125,6 @@ export async function solveLayout(req: LayoutRequest): Promise<Layout> {
     })),
     capacityPerSheet: r.capacity_per_sheet,
     sheetsNeeded: r.sheets_needed,
-  };
-}
-
-export async function checkResolution(
-  sourcePxW: number,
-  sourcePxH: number,
-  targetWidthMm: number,
-  targetHeightMm: number,
-  dpi: number,
-): Promise<ResolutionCheck> {
-  const r = await invoke<{
-    required_px_w: number;
-    required_px_h: number;
-    source_px_w: number;
-    source_px_h: number;
-    would_upscale: boolean;
-    max_lossless_dpi: number;
-  }>("check_resolution", {
-    sourcePxW,
-    sourcePxH,
-    targetWidthMm,
-    targetHeightMm,
-    dpi,
-  });
-  return {
-    requiredPxW: r.required_px_w,
-    requiredPxH: r.required_px_h,
-    sourcePxW: r.source_px_w,
-    sourcePxH: r.source_px_h,
-    wouldUpscale: r.would_upscale,
-    maxLosslessDpi: r.max_lossless_dpi,
   };
 }
 
@@ -351,13 +311,6 @@ export interface Adjustments {
   tint: number;
 }
 
-export const NEUTRAL_ADJUSTMENTS: Adjustments = {
-  exposureEv: 0,
-  contrast: 0,
-  temperature: 0,
-  tint: 0,
-};
-
 export function isNeutral(a: Adjustments): boolean {
   return a.exposureEv === 0 && a.contrast === 0 && a.temperature === 0 && a.tint === 0;
 }
@@ -425,16 +378,8 @@ export async function setMaskThreshold(threshold: number): Promise<Mask> {
   return toMask(await invoke<RawMask>("set_mask_threshold", { threshold }));
 }
 
-export async function maskStrokeCount(): Promise<number> {
-  return invoke<number>("mask_stroke_count");
-}
-
 export async function clearMask(): Promise<void> {
   return invoke<void>("clear_mask");
-}
-
-export async function maskSize(): Promise<number> {
-  return invoke<number>("mask_size");
 }
 
 export async function backgroundUniformity(

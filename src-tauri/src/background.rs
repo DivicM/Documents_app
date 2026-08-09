@@ -7,7 +7,7 @@
 use domain::mask::{apply_edits, apply_threshold, AlphaMask, BrushMode, BrushStroke, MaskEdits};
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
-use vision::segment::{BackgroundSegmenter, INPUT_SIZE};
+use vision::segment::BackgroundSegmenter;
 
 use crate::commands::UiError;
 use crate::face::{ensure_runtime_path, resource_path};
@@ -195,13 +195,6 @@ pub fn reset_mask_edits(state: tauri::State<'_, SegmentState>) -> Result<MaskDto
     Ok(to_dto(&effective, "auto"))
 }
 
-/// How many strokes are currently applied, for enabling the undo button.
-#[tauri::command]
-pub fn mask_stroke_count(state: tauri::State<'_, SegmentState>) -> Result<usize, UiError> {
-    let guard = state.0.lock().map_err(|_| UiError::new("error.internal.lock"))?;
-    Ok(guard.edits.strokes.len())
-}
-
 /// Forget the mask, so a newly loaded photo does not inherit the previous one.
 #[tauri::command]
 pub fn clear_mask(state: tauri::State<'_, SegmentState>) -> Result<(), UiError> {
@@ -210,12 +203,6 @@ pub fn clear_mask(state: tauri::State<'_, SegmentState>) -> Result<(), UiError> 
     guard.edits.clear();
     guard.threshold = 128;
     Ok(())
-}
-
-/// The mask resolution, which is fixed by the model.
-#[tauri::command]
-pub fn mask_size() -> u32 {
-    INPUT_SIZE
 }
 
 /// Standard deviation of the background, for the uniformity rule.

@@ -8,7 +8,6 @@ pub mod adjust;
 pub mod geometry;
 pub mod layout;
 pub mod mask;
-pub mod overrides;
 pub mod render;
 pub mod resample;
 pub mod rules;
@@ -24,7 +23,6 @@ pub use mask::{
     apply_edits, apply_threshold, composite_background, AlphaMask, BrushMode, BrushStroke,
     MaskEdits,
 };
-pub use overrides::{effective, AutoFlags, FaceState, Overrides};
 pub use render::{
     placement_to_pixels, render_sheet, render_sheet_with_photo, CalibrationScale, PhotoSource,
     PixelRect, PrintableOrigin, Raster, RenderParams,

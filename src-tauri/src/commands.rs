@@ -4,7 +4,6 @@
 //! something the UI can show. No layout or geometry logic lives here.
 
 use domain::layout::{Alignment, LayoutConfig, SizeMm};
-use domain::units;
 use platform::calibration::{Calibration, CalibrationKey, CalibrationStore};
 use platform::print::{PaperSize, PrintBackend, PrintJob};
 use serde::{Deserialize, Serialize};
@@ -259,46 +258,6 @@ pub fn solve_mixed_layout(req: MixedLayoutRequest) -> CmdResult<MixedLayoutDto> 
             })
             .collect(),
         unplaced: sheet.unplaced,
-    })
-}
-
-#[derive(Debug, Serialize)]
-pub struct ResolutionCheckDto {
-    pub required_px_w: u32,
-    pub required_px_h: u32,
-    pub source_px_w: u32,
-    pub source_px_h: u32,
-    pub would_upscale: bool,
-    pub max_lossless_dpi: f64,
-}
-
-/// Report whether a source image has the pixels for a target size at a DPI.
-///
-/// The UI shows these numbers rather than silently interpolating, per the rule
-/// that upscaling must never happen without the user saying so.
-#[tauri::command]
-pub fn check_resolution(
-    source_px_w: u32,
-    source_px_h: u32,
-    target_width_mm: f64,
-    target_height_mm: f64,
-    dpi: f64,
-) -> CmdResult<ResolutionCheckDto> {
-    if dpi <= 0.0 || target_width_mm <= 0.0 || target_height_mm <= 0.0 {
-        return Err(UiError::new("error.layout.invalid_dimensions"));
-    }
-
-    let required_w = units::mm_to_px(target_width_mm, dpi);
-    let required_h = units::mm_to_px(target_height_mm, dpi);
-
-    Ok(ResolutionCheckDto {
-        required_px_w: required_w,
-        required_px_h: required_h,
-        source_px_w,
-        source_px_h,
-        would_upscale: required_w > source_px_w || required_h > source_px_h,
-        max_lossless_dpi: units::max_lossless_dpi(source_px_w, target_width_mm)
-            .min(units::max_lossless_dpi(source_px_h, target_height_mm)),
     })
 }
 
