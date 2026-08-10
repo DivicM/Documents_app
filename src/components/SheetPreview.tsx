@@ -19,6 +19,8 @@ interface Props {
   crop?: CropResult | null;
   /** Straightening angle applied to the crop, in degrees. */
   rotationDeg?: number;
+  /** Turn the picture inside its frame, matching RenderParams::turn_photo. */
+  turnPhoto?: boolean;
   /** Cap on the drawn height, so tall paper does not dominate the panel. */
   maxHeightPx?: number;
 }
@@ -37,6 +39,7 @@ export function SheetPreview({
   image,
   crop,
   rotationDeg = 0,
+  turnPhoto = false,
   maxHeightPx = 520,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -107,9 +110,11 @@ export function SheetPreview({
     for (const p of layout.placements) {
       if (showCutMarks) {
         ctx.save();
-        ctx.strokeStyle = "#b9bec5";
+        // Matches CUT_MARK_GREY and CUT_MARK_LENGTH_MM in render.rs, so the
+        // preview shows the same faint guides that will be printed.
+        ctx.strokeStyle = "#d2d2d2";
         ctx.lineWidth = 0.2;
-        const len = 3;
+        const len = 2.5;
         // Corner marks sit outside the photo so they can be cut away.
         const corners: Array<[number, number, number, number]> = [
           [p.xMm - len, p.yMm, p.xMm, p.yMm],
@@ -141,7 +146,7 @@ export function SheetPreview({
       }
 
       if (image && crop) {
-        drawPhoto(ctx, image, crop, rotationDeg, p);
+        drawPhoto(ctx, image, crop, rotationDeg, p, turnPhoto);
       } else {
         ctx.fillStyle = "#dfe4ea";
         ctx.fillRect(p.xMm, p.yMm, p.widthMm, p.heightMm);
@@ -160,6 +165,7 @@ export function SheetPreview({
     image,
     crop,
     rotationDeg,
+    turnPhoto,
     availableWidth,
     maxHeightPx,
   ]);
@@ -188,6 +194,7 @@ function drawPhoto(
   crop: CropResult,
   rotationDeg: number,
   p: { xMm: number; yMm: number; widthMm: number; heightMm: number; rotated: boolean },
+  turnPhoto: boolean,
 ) {
   const c = crop.rect;
 
@@ -200,14 +207,16 @@ function drawPhoto(
   // Work from the centre of the placement outwards.
   ctx.translate(p.xMm + p.widthMm / 2, p.yMm + p.heightMm / 2);
 
-  // A rotated layout turns the photo rather than stretching it, matching the
-  // renderer; without this, faces would come out squashed on rotated sheets.
-  if (p.rotated) {
+  // XOR, matching render.rs: the frame's own rotation and a requested turn of
+  // the picture compose. Diverging here is the classic "right on screen, wrong
+  // on paper" bug.
+  const turned = p.rotated !== turnPhoto;
+  if (turned) {
     ctx.rotate(Math.PI / 2);
   }
   // After the quarter turn the photo's own width and height swap.
-  const drawW = p.rotated ? p.heightMm : p.widthMm;
-  const drawH = p.rotated ? p.widthMm : p.heightMm;
+  const drawW = turned ? p.heightMm : p.widthMm;
+  const drawH = turned ? p.widthMm : p.heightMm;
 
   // Straightening: rotate the source about the crop centre.
   const theta = (-rotationDeg * Math.PI) / 180;

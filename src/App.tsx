@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CompliancePanel } from "./components/CompliancePanel";
+import { DropZone } from "./components/DropZone";
+import { FormatPicker } from "./components/FormatPicker";
 import { PhotoCanvas, type Anchors, type HandleName } from "./components/PhotoCanvas";
+import { Section } from "./components/Section";
+import { SettingsDialog } from "./components/SettingsDialog";
 import { SheetPreview } from "./components/SheetPreview";
+import { StepBar } from "./components/StepBar";
 import {
   canRedo,
   canUndo,
@@ -38,7 +43,28 @@ const PAPERS = [
  */
 const CALIBRATION_PAPER = { widthMm: 210, heightMm: 297 };
 
+/**
+ * Head height used for every crop, in millimetres.
+ *
+ * Fixed at the user's request: they frame the photograph themselves and do not
+ * want the control. Note this sits above the Croatian legal range of 31.5–36mm
+ * for a 35x45 photo, so the compliance panel will report head_height as failing
+ * on Croatian specs. That is deliberate and the check is left working rather
+ * than suppressed.
+ */
+const HEAD_HEIGHT_MM = 42;
+
+/** The four steps, in order. */
+const STEP_PICK = 0;
+const STEP_FORMAT = 1;
+const STEP_EDIT = 2;
+const STEP_PRINT = 3;
+
 export default function App() {
+  const [step, setStep] = useState(STEP_PICK);
+  /** Shown on the first screen once a file has been chosen. */
+  const [imageName, setImageName] = useState<string | null>(null);
+
   const [printers, setPrinters] = useState<Printer[]>([]);
   const [selectedPrinter, setSelectedPrinter] = useState<string>("");
   const [caps, setCaps] = useState<PrinterCapabilities | null>(null);
@@ -68,7 +94,7 @@ export default function App() {
   const [cropError, setCropError] = useState<string | null>(null);
   /** Head height the solver says would fit, offered as a one-click fix. */
   const [suggestedHeadMm, setSuggestedHeadMm] = useState<number | null>(null);
-  const [headHeightMm, setHeadHeightMm] = useState(33.75);
+  const [headHeightMm, setHeadHeightMm] = useState(HEAD_HEIGHT_MM);
   /** User-dragged anchors. Missing entries fall back to the detected ones. */
   const [anchorOverride, setAnchorOverride] = useState<Partial<Anchors>>({});
   /** Explicit rotation, overriding the angle derived from the eye line. */
@@ -113,16 +139,11 @@ export default function App() {
   ]);
   const [mixedLayout, setMixedLayout] = useState<ipc.MixedLayout | null>(null);
 
-  // Auto-print, gated on validation passing.
-  const [autoPrint, setAutoPrint] = useState(false);
-  /**
-   * Prevents the same photo printing twice.
-   *
-   * Auto-print fires from an effect that re-runs whenever validation changes,
-   * and validation changes on every slider nudge. Without a latch a compliant
-   * photo would print on each one.
-   */
-  const autoPrintedFor = useRef<string | null>(null);
+  // Settings that persist between sessions.
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [quarterTurn, setQuarterTurn] = useState(true);
+  const [turnPhoto, setTurnPhoto] = useState(true);
+  const [settingsStatus, setSettingsStatus] = useState<string | null>(null);
 
   // Undo/redo over edit parameters. Snapshots are cheap because they hold
   // numbers, not pixels.
@@ -130,7 +151,7 @@ export default function App() {
     createHistory<EditState>({
       anchorOverride: {},
       rotationOverride: null,
-      headHeightMm: 33.75,
+      headHeightMm: HEAD_HEIGHT_MM,
       photoWidthMm: 35,
       photoHeightMm: 45,
       count: 6,
@@ -183,10 +204,35 @@ export default function App() {
     return (Math.atan2(dy, dx) * 180) / Math.PI;
   }, [rotationOverride, anchors]);
 
-  const paper = useMemo(
+  const chosenPaper = useMemo(
     () => PAPERS.find((p) => p.id === paperId) ?? PAPERS[0],
     [paperId],
   );
+
+  /**
+   * The paper actually used, which is what the driver reports when it can.
+   *
+   * A dye-sublimation photo printer is configured for one paper size and
+   * ignores anything else sent to it, so laying out for the size picked in the
+   * app is what put photographs off the edge of the sheet. The preview must
+   * show the same sheet the printer will use.
+   */
+  const paper = useMemo(() => {
+    if (caps && caps.paperWidthMm > 1 && caps.paperHeightMm > 1) {
+      return {
+        id: chosenPaper.id,
+        labelKey: chosenPaper.labelKey,
+        widthMm: caps.paperWidthMm,
+        heightMm: caps.paperHeightMm,
+      };
+    }
+    return chosenPaper;
+  }, [caps, chosenPaper]);
+
+  /** True when the printer overrode the chosen paper, so the UI can say so. */
+  const paperOverridden =
+    Math.abs(paper.widthMm - chosenPaper.widthMm) > 0.5 ||
+    Math.abs(paper.heightMm - chosenPaper.heightMm) > 0.5;
 
   const refreshPrinters = useCallback(async () => {
     try {
@@ -221,7 +267,8 @@ export default function App() {
       if (!s) return;
       setPhotoWidthMm(s.widthMm);
       setPhotoHeightMm(s.heightMm);
-      if (s.headHeightMm !== null) setHeadHeightMm(s.headHeightMm);
+      // Head height stays at HEAD_HEIGHT_MM rather than following the spec:
+      // the user frames the photograph themselves.
       setCount(s.defaultCount);
       setCutMarks(s.cutMarks);
       if (s.backgroundRgb) setBgColour(s.backgroundRgb);
@@ -236,6 +283,59 @@ export default function App() {
       .then(setPresets)
       .catch((e) => setError(formatError(e)));
   }, []);
+
+  // Restore the persisted sheet settings on startup.
+  useEffect(() => {
+    ipc
+      .getSheetSettings()
+      .then((s) => {
+        setPaperId(s.paperId);
+        setCount(s.count);
+        setMarginMm(s.marginMm);
+        setGutterMm(s.gutterMm);
+        setAlignTopLeft(s.alignTopLeft);
+        setCutMarks(s.cutMarks);
+        setQuarterTurn(s.quarterTurn);
+        setTurnPhoto(s.turnPhoto);
+        // Only if that printer is still installed; otherwise the default
+        // chosen by refreshPrinters stands.
+        if (s.printer) setSelectedPrinter((current) => current || s.printer);
+      })
+      .catch(() => {
+        // Unreadable settings must not stop the app; defaults are fine.
+      });
+  }, []);
+
+  /** Write the sheet settings so they survive a restart. */
+  const onSaveSettings = useCallback(async () => {
+    setSettingsStatus(null);
+    try {
+      await ipc.saveSheetSettings({
+        paperId,
+        count,
+        marginMm,
+        gutterMm,
+        alignTopLeft,
+        cutMarks,
+        quarterTurn,
+        turnPhoto,
+        printer: selectedPrinter,
+      });
+      setSettingsStatus(t("settings.saved"));
+    } catch (e) {
+      setSettingsStatus(formatError(e));
+    }
+  }, [
+    paperId,
+    count,
+    marginMm,
+    gutterMm,
+    alignTopLeft,
+    cutMarks,
+    quarterTurn,
+    turnPhoto,
+    selectedPrinter,
+  ]);
 
   // Recompute the mixed layout whenever the groups or paper change.
   useEffect(() => {
@@ -253,6 +353,7 @@ export default function App() {
           groups,
           marginMm,
           gutterMm,
+          quarterTurn,
         });
         if (!cancelled) {
           setMixedLayout(result);
@@ -269,7 +370,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [mixedMode, groups, paper.widthMm, paper.heightMm, marginMm, gutterMm]);
+  }, [mixedMode, groups, paper.widthMm, paper.heightMm, marginMm, gutterMm, quarterTurn]);
 
   // Printer capabilities and calibration both depend on printer + paper.
   useEffect(() => {
@@ -278,10 +379,13 @@ export default function App() {
 
     (async () => {
       try {
+        // Queried with the chosen size, not the effective one: the effective
+        // size is derived from this answer, and using it here would be
+        // circular. The backend only uses these as a fallback anyway.
         const c = await ipc.printerCapabilities(
           selectedPrinter,
-          paper.widthMm,
-          paper.heightMm,
+          chosenPaper.widthMm,
+          chosenPaper.heightMm,
         );
         if (!cancelled) setCaps(c);
       } catch {
@@ -305,7 +409,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [selectedPrinter, paper.widthMm, paper.heightMm]);
+  }, [selectedPrinter, chosenPaper.widthMm, chosenPaper.heightMm]);
 
   // Recompute the layout whenever any input changes.
   useEffect(() => {
@@ -322,6 +426,7 @@ export default function App() {
           marginMm,
           gutterMm,
           alignTopLeft,
+          quarterTurn,
         });
         if (!cancelled) {
           setLayout(result);
@@ -347,6 +452,7 @@ export default function App() {
     marginMm,
     gutterMm,
     alignTopLeft,
+    quarterTurn,
   ]);
 
   /** Read the image into a canvas and hand the raw pixels to the detector. */
@@ -402,6 +508,7 @@ export default function App() {
     const img = new Image();
     img.onload = () => {
       setImage(img);
+      setImageName(file.name);
       void runDetection(img);
       // The bitmap is decoded; the blob URL is no longer needed.
       URL.revokeObjectURL(url);
@@ -412,6 +519,41 @@ export default function App() {
     };
     img.src = url;
   };
+
+  /**
+   * Return to the first screen for a new photo.
+   *
+   * Clears the image and everything derived from it, but deliberately keeps the
+   * chosen format, printer and sheet settings: the next photo is usually for
+   * the same document on the same paper.
+   */
+  const startOver = useCallback(() => {
+    setStep(STEP_PICK);
+    setImage(null);
+    setImageName(null);
+    setDetection(null);
+    setCrop(null);
+    setCropError(null);
+    setAnchorOverride({});
+    setRotationOverride(null);
+    setMask(null);
+    setStrokeCount(0);
+    setShowMask(false);
+    setBrushMode(null);
+    setMaskThreshold(128);
+    setPickingColour(false);
+    setValidation(null);
+    setImageStats(null);
+    setBgStddev(null);
+    setExposureEv(0);
+    setContrast(0);
+    setTemperature(0);
+    setTint(0);
+    setStatus(null);
+    setError(null);
+    imagePixels.current = null;
+    void ipc.clearMask().catch(() => {});
+  }, []);
 
   // Recompute the crop whenever the anchors or the requested head size change.
   useEffect(() => {
@@ -637,11 +779,32 @@ export default function App() {
       };
     }
 
+    // Bilinear, matching composite_background in mask.rs. The mask is roughly
+    // six times smaller than the photo, and picking the nearest texel shows
+    // that magnification as blocky stair-steps along the hair and chin.
+    const sx = mask.width / px.w;
+    const sy = mask.height / px.h;
+    const sampleMask = (u: number, v: number): number => {
+      const mx = Math.min(Math.max(u - 0.5, 0), mask.width - 1);
+      const my = Math.min(Math.max(v - 0.5, 0), mask.height - 1);
+      const x0 = Math.floor(mx);
+      const y0 = Math.floor(my);
+      const x1 = Math.min(x0 + 1, mask.width - 1);
+      const y1 = Math.min(y0 + 1, mask.height - 1);
+      const fx = mx - x0;
+      const fy = my - y0;
+      const top =
+        mask.data[y0 * mask.width + x0] * (1 - fx) + mask.data[y0 * mask.width + x1] * fx;
+      const bottom =
+        mask.data[y1 * mask.width + x0] * (1 - fx) + mask.data[y1 * mask.width + x1] * fx;
+      return top * (1 - fy) + bottom * fy;
+    };
+
     for (let y = 0; y < px.h; y++) {
-      const my = Math.floor((y * mask.height) / px.h);
+      // Sample from the centre of each destination pixel, not its corner.
+      const v = (y + 0.5) * sy;
       for (let x = 0; x < px.w; x++) {
-        const mx = Math.floor((x * mask.width) / px.w);
-        const alpha = mask.data[my * mask.width + mx] / 255;
+        const alpha = sampleMask((x + 0.5) * sx, v) / 255;
         const i = (y * px.w + x) * 4;
         for (let c = 0; c < 3; c++) {
           // Blend from the already-toned pixel, not the original, so tone and
@@ -710,7 +873,9 @@ export default function App() {
   const onApplyFix = useCallback((fix: ipc.FixHint) => {
     switch (fix.kind) {
       case "set_head_height_mm":
-        setHeadHeightMm(fix.value);
+        // Head height is fixed at HEAD_HEIGHT_MM by choice, so this fix is
+        // reported but not applied — silently changing it would contradict
+        // the setting.
         break;
       case "set_rotation_deg":
         // The fix reports the measured tilt; straightening means applying it.
@@ -930,6 +1095,9 @@ export default function App() {
             groups,
             marginMm,
             gutterMm,
+            quarterTurn,
+            turnPhoto,
+            cutMarks,
             photo,
           })
         : await ipc.printSheet({
@@ -942,6 +1110,9 @@ export default function App() {
             marginMm,
             gutterMm,
             alignTopLeft,
+            quarterTurn,
+            turnPhoto,
+            cutMarks,
             photo,
           });
       setStatus(t("print.sent", { jobId }));
@@ -963,68 +1134,10 @@ export default function App() {
     marginMm,
     gutterMm,
     alignTopLeft,
+    quarterTurn,
+    turnPhoto,
+    cutMarks,
   ]);
-
-  /**
-   * Identifies the photo-and-settings combination currently on screen.
-   *
-   * Auto-print latches on this, so changing anything that affects the output
-   * arms it again while a slider nudge that changes nothing does not.
-   */
-  const autoPrintKey = useMemo(() => {
-    if (!crop) return null;
-    return JSON.stringify([
-      crop.rect,
-      rotationDeg,
-      photoWidthMm,
-      photoHeightMm,
-      count,
-      paper.widthMm,
-      paper.heightMm,
-      marginMm,
-      gutterMm,
-      mixedMode ? groups : null,
-      replaceBackground ? bgColour : null,
-      adjustments,
-    ]);
-  }, [
-    crop,
-    rotationDeg,
-    photoWidthMm,
-    photoHeightMm,
-    count,
-    paper.widthMm,
-    paper.heightMm,
-    marginMm,
-    gutterMm,
-    mixedMode,
-    groups,
-    replaceBackground,
-    bgColour,
-    adjustments,
-  ]);
-
-  /**
-   * Print automatically once every measurable rule passes.
-   *
-   * Blocking on a failure is deliberate: photo paper is the expensive part, and
-   * a sheet that fails the spec is wasted. The manual button stays available,
-   * so the user can override this at any time.
-   */
-  useEffect(() => {
-    if (!autoPrint || !selectedPrinter || !autoPrintKey) return;
-    if (!specId || !validation) return;
-    if (validation.blocking) return;
-    if (autoPrintedFor.current === autoPrintKey) return;
-
-    autoPrintedFor.current = autoPrintKey;
-    void (async () => {
-      const jobId = await onPrintSheet();
-      if (jobId !== null && jobId !== undefined) {
-        setStatus(t("autoprint.done", { jobId }));
-      }
-    })();
-  }, [autoPrint, selectedPrinter, autoPrintKey, specId, validation, onPrintSheet]);
 
   const onSavePreset = async () => {
     setStatus(null);
@@ -1104,86 +1217,102 @@ export default function App() {
 
   const rotated = layout?.placements[0]?.rotated ?? false;
 
+  /** Whether the current step is complete enough to move on. */
+  const canAdvance =
+    step === STEP_PICK
+      ? image !== null
+      : step === STEP_FORMAT
+        ? specId !== ""
+        : step === STEP_EDIT
+          ? crop !== null
+          : false;
+
+  const selectedSpec = useMemo(
+    () => specs.find((s) => s.id === specId) ?? null,
+    [specs, specId],
+  );
+
+  /** Print, then return to the start ready for the next person. */
+  const onPrintAndFinish = async () => {
+    const jobId = await onPrintSheet();
+    if (jobId === null || jobId === undefined) return;
+    startOver();
+    setStatus(t("print.done"));
+  };
+
   return (
     <main className="app">
       <header className="app-header">
         <h1>{t("app.title")}</h1>
         <div className="header-actions">
-          <button
-            type="button"
-            className="small"
-            disabled={!canUndo(history)}
-            onClick={onUndo}
-            title={t("edit.undo_hint")}
-          >
-            ↶ {t("edit.undo")}
-          </button>
-          <button
-            type="button"
-            className="small"
-            disabled={!canRedo(history)}
-            onClick={onRedo}
-            title={t("edit.undo_hint")}
-          >
-            ↷ {t("edit.redo")}
-          </button>
+          {step === STEP_EDIT && (
+            <>
+              <button
+                type="button"
+                className="small"
+                disabled={!canUndo(history)}
+                onClick={onUndo}
+                title={t("edit.undo_hint")}
+              >
+                ↶ {t("edit.undo")}
+              </button>
+              <button
+                type="button"
+                className="small"
+                disabled={!canRedo(history)}
+                onClick={onRedo}
+                title={t("edit.undo_hint")}
+              >
+                ↷ {t("edit.redo")}
+              </button>
+            </>
+          )}
+          {image && (
+            <button type="button" className="small" onClick={startOver}>
+              {t("wizard.start_over")}
+            </button>
+          )}
         </div>
       </header>
 
-      <div className="columns">
-        <section className="panel">
-          <h2>{t("step.format")}</h2>
+      <StepBar current={step} onGoTo={setStep} />
 
-          <label>
-            {t("spec.label")}
-            <select value={specId} onChange={(e) => onSelectSpec(e.target.value)}>
-              <option value="">{t("spec.custom")}</option>
-              {specs.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.name}
-                </option>
-              ))}
-            </select>
-          </label>
+      {step === STEP_PICK && (
+        <div className="step-pane step-pane-narrow">
+          <DropZone onPick={(f) => void onPickImage(f)} loadedName={imageName} />
+          {detecting && <p className="status">{t("face.detecting")}</p>}
+          {error && <div className="error">{error}</div>}
+          {status && <div className="status">{status}</div>}
+        </div>
+      )}
 
-          {specId === "" && <p className="hint">{t("spec.free_mode")}</p>}
+      {step === STEP_FORMAT && (
+        <div className="step-pane step-pane-narrow">
+          <FormatPicker specs={specs} selectedId={specId} onSelect={onSelectSpec} />
           {specId !== "" && <p className="hint">{t("spec.chin_line_note")}</p>}
+          {error && <div className="error">{error}</div>}
+        </div>
+      )}
 
-          <label>
-            {t("format.width")}
-            <input
-              type="number"
-              min={5}
-              step={0.5}
-              value={photoWidthMm}
-              onChange={(e) => setPhotoWidthMm(Number(e.target.value))}
-            />
-          </label>
-
-          <label>
-            {t("format.height")}
-            <input
-              type="number"
-              min={5}
-              step={0.5}
-              value={photoHeightMm}
-              onChange={(e) => setPhotoHeightMm(Number(e.target.value))}
-            />
-          </label>
-
-          <label>
-            {t("format.count")}
-            <input
-              type="number"
-              min={1}
-              max={100}
-              value={count}
-              onChange={(e) => setCount(Number(e.target.value))}
-            />
-          </label>
-
-          <h2>{t("step.layout")}</h2>
-
+      {/*
+        Steps 3 and 4 share one grid. The panels are hidden rather than
+        unmounted so the photo canvas, its detection state and the loaded pixels
+        survive moving between them — remounting would re-run detection and
+        discard the user's anchor edits.
+      */}
+      <SettingsDialog
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        footer={
+          <>
+            {settingsStatus && <span className="status">{settingsStatus}</span>}
+            <button type="button" className="primary" onClick={() => void onSaveSettings()}>
+              {t("settings.save")}
+            </button>
+          </>
+        }
+        panes={[
+          <div key="layout">
           <label>
             {t("paper.label")}
             <select value={paperId} onChange={(e) => setPaperId(e.target.value)}>
@@ -1234,8 +1363,41 @@ export default function App() {
             />
             {t("layout.cut_marks")}
           </label>
+          <p className="hint">{t("layout.cut_marks_hint")}</p>
 
-          <h2>{t("mixed.title")}</h2>
+          <label className="checkbox">
+            <input
+              type="checkbox"
+              checked={quarterTurn}
+              onChange={(e) => setQuarterTurn(e.target.checked)}
+            />
+            {t("settings.quarter_turn")}
+          </label>
+          <p className="hint">{t("settings.quarter_turn_hint")}</p>
+
+          <label className="checkbox">
+            <input
+              type="checkbox"
+              checked={turnPhoto}
+              onChange={(e) => setTurnPhoto(e.target.checked)}
+            />
+            {t("settings.turn_photo")}
+          </label>
+          <p className="hint">{t("settings.turn_photo_hint")}</p>
+
+          <label>
+            {t("format.count")}
+            <input
+              type="number"
+              min={1}
+              max={100}
+              value={count}
+              onChange={(e) => setCount(Number(e.target.value))}
+            />
+          </label>
+          </div>,
+
+          <div key="mixed">
           <p className="hint">{t("mixed.explain")}</p>
 
           <label className="checkbox">
@@ -1303,8 +1465,9 @@ export default function App() {
               {groups.length === 0 && <p className="hint">{t("mixed.empty")}</p>}
             </>
           )}
+          </div>,
 
-          <h2>{t("preset.title")}</h2>
+          <div key="presets">
           <p className="hint">{t("preset.explain")}</p>
 
           <label>
@@ -1349,9 +1512,85 @@ export default function App() {
               </div>
             ))
           )}
-        </section>
+          </div>,
 
-        <section className="panel preview-panel">
+          <div key="calibration">
+          <p className="hint">{t("calibration.explain")}</p>
+
+          <div className="info">
+            {calibration && calibration.calibratedAt ? (
+              <>
+                <div>
+                  {t("calibration.done_at", {
+                    date: new Date(calibration.calibratedAt).toLocaleDateString("hr-HR"),
+                  })}
+                </div>
+                <div>
+                  {t("calibration.correction", {
+                    x: formatMm((calibration.scaleX - 1) * 100, 2),
+                    y: formatMm((calibration.scaleY - 1) * 100, 2),
+                  })}
+                </div>
+              </>
+            ) : (
+              t("calibration.never")
+            )}
+          </div>
+
+          <button
+            type="button"
+            onClick={() => void onPrintSquare(false)}
+            disabled={!selectedPrinter}
+          >
+            {t("calibration.print_square")}
+          </button>
+
+          <label>
+            {t("calibration.measured_x")}
+            <input
+              type="text"
+              inputMode="decimal"
+              value={measuredX}
+              onChange={(e) => setMeasuredX(e.target.value)}
+            />
+          </label>
+
+          <label>
+            {t("calibration.measured_y")}
+            <input
+              type="text"
+              inputMode="decimal"
+              value={measuredY}
+              onChange={(e) => setMeasuredY(e.target.value)}
+            />
+          </label>
+
+          <button
+            type="button"
+            onClick={() => void onSaveCalibration()}
+            disabled={!selectedPrinter}
+          >
+            {t("calibration.save")}
+          </button>
+
+          {calibration && calibration.calibratedAt && (
+            <button
+              type="button"
+              onClick={() => void onPrintSquare(true)}
+              disabled={!selectedPrinter}
+            >
+              {t("calibration.print_verify")}
+            </button>
+          )}
+          </div>,
+        ]}
+      />
+
+      <div
+        className={`columns ${step === STEP_EDIT ? "columns-edit" : "columns-print"}`}
+        hidden={step !== STEP_EDIT && step !== STEP_PRINT}
+      >
+        <section className="panel editor-photo" hidden={step !== STEP_EDIT}>
           <input
             ref={fileInputRef}
             type="file"
@@ -1364,10 +1603,13 @@ export default function App() {
             }}
           />
 
-          {!image && (
-            <button type="button" onClick={() => fileInputRef.current?.click()}>
-              {t("face.load_image")}
-            </button>
+          {selectedSpec && (
+            <p className="hint">
+              {t("editor.locked_ratio", {
+                width: formatMm(selectedSpec.widthMm, 0),
+                height: formatMm(selectedSpec.heightMm, 0),
+              })}
+            </p>
           )}
 
           {image && (
@@ -1418,26 +1660,22 @@ export default function App() {
                   )}
                 </div>
               )}
+            </>
+          )}
+        </section>
 
+        {/* Controls sit in their own column so the photo stays large and the
+            two scroll independently rather than as one long page. */}
+        <section className="panel editor-controls" hidden={step !== STEP_EDIT}>
+          {image && (
+            <>
               {detection && (
                 <>
-                  <label>
-                    <span className="label-row">
-                      {t("face.head_height")}
-                      {anchorOverride.chin || anchorOverride.crown ? null : (
-                        <span className="badge">{t("face.auto")}</span>
-                      )}
-                    </span>
-                    <input
-                      type="number"
-                      min={10}
-                      max={60}
-                      step={0.25}
-                      value={headHeightMm}
-                      onChange={(e) => setHeadHeightMm(Number(e.target.value))}
-                    />
-                  </label>
-
+                  <Section
+                    title={t("editor.group_crop")}
+                    defaultOpen
+                    badge={hasAnyOverride ? t("face.reset") : null}
+                  >
                   <label>
                     <span className="label-row">
                       {t("face.rotation")}
@@ -1497,8 +1735,12 @@ export default function App() {
                   >
                     {t("face.reset_all")}
                   </button>
+                  </Section>
 
-                  <h2>{t("adjust.title")}</h2>
+                  <Section
+                    title={t("editor.group_tone")}
+                    badge={ipc.isNeutral(adjustments) ? null : "●"}
+                  >
                   {(
                     [
                       ["adjust.exposure", exposureEv, setExposureEv, -3, 3, 0.1],
@@ -1540,9 +1782,12 @@ export default function App() {
                   >
                     {t("adjust.reset")}
                   </button>
+                  </Section>
 
-                  <h2>{t("bg.title")}</h2>
-
+                  <Section
+                    title={t("editor.group_background")}
+                    badge={mask && replaceBackground ? "●" : null}
+                  >
                   <button
                     type="button"
                     onClick={() => void runSegmentation()}
@@ -1711,6 +1956,19 @@ export default function App() {
                       </div>
                     </>
                   )}
+                  </Section>
+
+                  {/* Compliance sits with the editing controls, where the
+                      corrections it suggests can be applied immediately. */}
+                  {specId !== "" && validation && (
+                    <Section
+                      title={t("editor.group_checks")}
+                      defaultOpen
+                      badge={validation.blocking ? "❌" : "✅"}
+                    >
+                      <CompliancePanel validation={validation} onApplyFix={onApplyFix} />
+                    </Section>
+                  )}
                 </>
               )}
 
@@ -1738,8 +1996,9 @@ export default function App() {
           {status && <div className="status">{status}</div>}
         </section>
 
-        <section className="panel preview-panel">
+        <section className="panel preview-panel" hidden={step !== STEP_PRINT}>
           <h2>{t("preview.sheet")}</h2>
+          <p className="hint">{t("print.review")}</p>
 
           <SheetPreview
             layout={mixedMode ? mixedLayout : layout}
@@ -1759,6 +2018,7 @@ export default function App() {
             image={composited ?? image}
             crop={crop}
             rotationDeg={rotationDeg}
+            turnPhoto={turnPhoto}
           />
 
           {!mixedMode && layout && (
@@ -1793,11 +2053,9 @@ export default function App() {
             <p className="hint">{t("preview.no_crop")}</p>
           )}
           {!image && <p className="hint">{t("preview.no_image")}</p>}
-
-          <CompliancePanel validation={validation} onApplyFix={onApplyFix} />
         </section>
 
-        <section className="panel">
+        <section className="panel" hidden={step !== STEP_PRINT}>
           <h2>{t("step.print")}</h2>
 
           <label>
@@ -1823,6 +2081,12 @@ export default function App() {
             <div className="info">
               <div>{t("printer.dpi", { dpiX: caps.dpiX, dpiY: caps.dpiY })}</div>
               <div>
+                {t("printer.paper_from_driver", {
+                  width: formatMm(paper.widthMm, 1),
+                  height: formatMm(paper.heightMm, 1),
+                })}
+              </div>
+              <div>
                 {t("printer.margins", {
                   left: formatMm(caps.marginLeftMm, 2),
                   top: formatMm(caps.marginTopMm, 2),
@@ -1833,10 +2097,19 @@ export default function App() {
             </div>
           )}
 
+          {paperOverridden && (
+            <p className="hint">
+              {t("printer.paper_overridden", {
+                width: formatMm(paper.widthMm, 1),
+                height: formatMm(paper.heightMm, 1),
+              })}
+            </p>
+          )}
+
           <button
             type="button"
             className="primary"
-            onClick={() => void onPrintSheet()}
+            onClick={() => void onPrintAndFinish()}
             disabled={
               !selectedPrinter ||
               (mixedMode
@@ -1847,104 +2120,40 @@ export default function App() {
             {t("print.button")}
           </button>
 
-          <h2>{t("autoprint.title")}</h2>
-          <p className="hint">{t("autoprint.explain")}</p>
-
-          <label className="checkbox">
-            <input
-              type="checkbox"
-              checked={autoPrint}
-              onChange={(e) => {
-                setAutoPrint(e.target.checked);
-                // Turning it on should print the photo already on screen, so
-                // clear the latch rather than waiting for the next edit.
-                if (e.target.checked) autoPrintedFor.current = null;
-              }}
-            />
-            {t("autoprint.enable")}
-          </label>
-
-          {autoPrint && !specId && <p className="hint">{t("autoprint.needs_spec")}</p>}
-          {autoPrint && specId && validation?.blocking && (
-            <p className="hint">{t("autoprint.blocked")}</p>
-          )}
-          {autoPrint && specId && !validation && (
-            <p className="hint">{t("autoprint.waiting")}</p>
-          )}
-          {autoPrint && specId && validation && !validation.blocking && (
-            <p className="hint">{t("autoprint.armed")}</p>
-          )}
-
-          <h2>{t("calibration.title")}</h2>
-          <p className="hint">{t("calibration.explain")}</p>
-
-          <div className="info">
-            {calibration && calibration.calibratedAt ? (
-              <>
-                <div>
-                  {t("calibration.done_at", {
-                    date: new Date(calibration.calibratedAt).toLocaleDateString("hr-HR"),
-                  })}
-                </div>
-                <div>
-                  {t("calibration.correction", {
-                    x: formatMm((calibration.scaleX - 1) * 100, 2),
-                    y: formatMm((calibration.scaleY - 1) * 100, 2),
-                  })}
-                </div>
-              </>
-            ) : (
-              t("calibration.never")
-            )}
-          </div>
-
-          <button
-            type="button"
-            onClick={() => void onPrintSquare(false)}
-            disabled={!selectedPrinter}
-          >
-            {t("calibration.print_square")}
+          <button type="button" onClick={() => setSettingsOpen(true)}>
+            {t("settings.open")}
           </button>
-
-          <label>
-            {t("calibration.measured_x")}
-            <input
-              type="text"
-              inputMode="decimal"
-              value={measuredX}
-              onChange={(e) => setMeasuredX(e.target.value)}
-            />
-          </label>
-
-          <label>
-            {t("calibration.measured_y")}
-            <input
-              type="text"
-              inputMode="decimal"
-              value={measuredY}
-              onChange={(e) => setMeasuredY(e.target.value)}
-            />
-          </label>
-
-          <button
-            type="button"
-            onClick={() => void onSaveCalibration()}
-            disabled={!selectedPrinter}
-          >
-            {t("calibration.save")}
-          </button>
-
-          {calibration && calibration.calibratedAt && (
-            <button
-              type="button"
-              onClick={() => void onPrintSquare(true)}
-              disabled={!selectedPrinter}
-            >
-              {t("calibration.print_verify")}
-            </button>
-          )}
         </section>
       </div>
+
+      {/* Printing is its own action on the last step, so no Next there. */}
+      {step !== STEP_PRINT && (
+        <nav className="wizard-nav">
+          <button
+            type="button"
+            disabled={step === STEP_PICK}
+            onClick={() => setStep((s) => Math.max(STEP_PICK, s - 1))}
+          >
+            {t("wizard.back")}
+          </button>
+          <button
+            type="button"
+            className="primary"
+            disabled={!canAdvance}
+            onClick={() => setStep((s) => Math.min(STEP_PRINT, s + 1))}
+          >
+            {t("wizard.next")} →
+          </button>
+        </nav>
+      )}
+
+      {step === STEP_PRINT && (
+        <nav className="wizard-nav">
+          <button type="button" onClick={() => setStep(STEP_EDIT)}>
+            {t("wizard.back")}
+          </button>
+        </nav>
+      )}
 
       <footer className="disclaimer">{t("disclaimer")}</footer>
     </main>

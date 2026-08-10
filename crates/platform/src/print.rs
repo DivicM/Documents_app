@@ -14,6 +14,21 @@ pub struct PrinterInfo {
     pub is_default: bool,
 }
 
+/// The sheet the driver believes is loaded, and how much of it can be printed.
+///
+/// Read from the device rather than assumed: a photo printer is configured with
+/// one paper size, and printing a layout computed for a different one puts the
+/// photos off the edge.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct DevicePaper {
+    /// Whole sheet, including any unprintable border.
+    pub physical_width_mm: f64,
+    pub physical_height_mm: f64,
+    /// The area the printer can actually mark.
+    pub printable_width_mm: f64,
+    pub printable_height_mm: f64,
+}
+
 /// Non-printable border the hardware imposes, in millimetres.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Margins {
@@ -120,6 +135,9 @@ pub trait PrintBackend {
 
     /// Non-printable border the hardware imposes for the given paper.
     fn hardware_margins_mm(&self, printer: &str, paper: PaperSize) -> Result<Margins>;
+
+    /// The paper the driver is currently configured for.
+    fn device_paper(&self, printer: &str) -> Result<DevicePaper>;
 
     /// Send a raster that is already at device resolution.
     fn print_raster(&self, job: &PrintJob) -> Result<JobId>;

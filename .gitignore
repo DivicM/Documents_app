@@ -9,12 +9,11 @@ Thumbs.db
 # Test photographs. Personal data: never commit these.
 /test-data
 
-# Large binaries fetched per machine by fetch-models.ps1. The BiRefNet model is
-# 109MB, over GitHub's 100MB file limit; the ONNX Runtime DLL is identical for
-# everyone. YuNet (227KB) stays committed: it is small and the build depends on
-# its exact contents.
+# The ONNX Runtime DLL is 14MB and identical for everyone, so it is fetched per
+# machine by fetch-models.ps1. Both models are committed: YuNet is 227KB and
+# u2netp 4.4MB, small enough that pinning their exact contents in git is worth
+# more than the space saved.
 /runtime/*.dll
-/models/birefnet_lite_fp16.onnx
 
 # Throwaway toolchain verification project
 /_toolchain_probe

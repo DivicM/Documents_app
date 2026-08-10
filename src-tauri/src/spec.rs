@@ -22,6 +22,11 @@ pub struct SpecSummary {
     pub background_rgb: Option<[u8; 3]>,
     /// True when the spec imposes no geometry, i.e. free crop.
     pub free_mode: bool,
+    /// "verified", "baseline" or "community". The picker warns on anything but
+    /// verified, so the user knows which numbers to check themselves.
+    pub confidence: String,
+    /// Country code, for grouping the list.
+    pub country: Option<String>,
 }
 
 fn summarise(spec: &Spec, lang: &str) -> SpecSummary {
@@ -42,6 +47,13 @@ fn summarise(spec: &Spec, lang: &str) -> SpecSummary {
         cut_marks: spec.layout_defaults.cut_marks,
         background_rgb: spec.background.as_ref().map(|b| b.default_rgb()),
         free_mode: spec.is_free_mode(),
+        confidence: match spec.confidence {
+            domain::spec::Confidence::Verified => "verified",
+            domain::spec::Confidence::Baseline => "baseline",
+            domain::spec::Confidence::Community => "community",
+        }
+        .to_string(),
+        country: spec.country.clone(),
     }
 }
 
@@ -123,15 +135,11 @@ pub fn validate_photo(req: ValidateRequest) -> Result<ValidationDto, UiError> {
 /// Computed in Rust rather than the webview because the same code must produce
 /// the numbers the validator sees and the numbers the print path uses.
 #[tauri::command]
-pub fn analyse_image(
-    rgba: Vec<u8>,
-    width: u32,
-    height: u32,
-    face_x: Option<u32>,
-    face_y: Option<u32>,
-    face_width: Option<u32>,
-    face_height: Option<u32>,
-) -> Result<ImageStatsDto, UiError> {
+pub fn analyse_image(request: tauri::ipc::Request<'_>) -> Result<ImageStatsDto, UiError> {
+    let width = crate::commands::header_u32(&request, "x-width")?;
+    let height = crate::commands::header_u32(&request, "x-height")?;
+    let rgba = crate::commands::raw_body(&request)?;
+
     let expected = width as usize * height as usize * 4;
     if rgba.len() != expected {
         return Err(UiError::with(
@@ -140,13 +148,22 @@ pub fn analyse_image(
         ));
     }
 
-    let (shadows, highlights) = domain::adjust::clipping(&rgba);
+    // The face rectangle is optional; absent headers mean "measure everywhere".
+    let face = |name: &str| {
+        request
+            .headers()
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<u32>().ok())
+    };
+
+    let (shadows, highlights) = domain::adjust::clipping(rgba);
     // Sharpness over the face, so a busy background does not mask a soft face.
-    let region = match (face_x, face_y, face_width, face_height) {
+    let region = match (face("x-face-x"), face("x-face-y"), face("x-face-w"), face("x-face-h")) {
         (Some(x), Some(y), Some(w), Some(h)) => Some((x, y, w, h)),
         _ => None,
     };
-    let sharpness = domain::adjust::laplacian_variance(&rgba, width, height, region);
+    let sharpness = domain::adjust::laplacian_variance(rgba, width, height, region);
 
     Ok(ImageStatsDto { clipped_shadows: shadows, clipped_highlights: highlights, sharpness })
 }

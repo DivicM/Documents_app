@@ -7,6 +7,53 @@
 
 import { invoke } from "@tauri-apps/api/core";
 
+/**
+ * Send raw pixels instead of a JSON number array.
+ *
+ * Tauri turns an ArrayBuffer body into `InvokeBody::Raw`, which crosses the
+ * boundary as bytes. Passing the same pixels as a number array inflates a
+ * 10.7MB photo into 32MB of JSON text and costs roughly two seconds to encode
+ * and parse — far more than the work being asked for.
+ *
+ * Dimensions travel as headers because the body carries only pixels.
+ */
+async function invokeWithPixels<T>(
+  cmd: string,
+  rgba: Uint8ClampedArray,
+  width: number,
+  height: number,
+  extraHeaders: Record<string, string> = {},
+): Promise<T> {
+  // `slice()` yields a copy whose buffer is exactly this image, which matters
+  // when the canvas hands back a view into a larger buffer.
+  const bytes = new Uint8Array(rgba.buffer, rgba.byteOffset, rgba.byteLength).slice();
+  return invoke<T>(cmd, bytes.buffer as ArrayBuffer, {
+    headers: {
+      "x-width": String(width),
+      "x-height": String(height),
+      ...extraHeaders,
+    },
+  });
+}
+
+/**
+ * Unpack the binary mask response.
+ *
+ * Layout matches `mask_response` in background.rs: width, height, subject ratio
+ * (little-endian u32/u32/f32), backend name length, the name, then the mask.
+ */
+function decodeMask(buffer: ArrayBuffer): Mask {
+  const view = new DataView(buffer);
+  const width = view.getUint32(0, true);
+  const height = view.getUint32(4, true);
+  const subjectRatio = view.getFloat32(8, true);
+  const nameLen = view.getUint32(12, true);
+  const nameStart = 16;
+  const backend = new TextDecoder().decode(new Uint8Array(buffer, nameStart, nameLen));
+  const data = new Uint8Array(buffer, nameStart + nameLen);
+  return { width, height, data, backend, subjectRatio };
+}
+
 export interface Printer {
   name: string;
   driver: string;
@@ -20,6 +67,9 @@ export interface PrinterCapabilities {
   marginTopMm: number;
   marginRightMm: number;
   marginBottomMm: number;
+  /** The paper the driver is set to, which may differ from the one chosen. */
+  paperWidthMm: number;
+  paperHeightMm: number;
 }
 
 export interface Placement {
@@ -45,6 +95,8 @@ export interface LayoutRequest {
   marginMm: number;
   gutterMm: number;
   alignTopLeft: boolean;
+  /** Turn the frame on its side. The preview must match what will print. */
+  quarterTurn?: boolean;
 }
 
 export interface Calibration {
@@ -76,6 +128,8 @@ export async function printerCapabilities(
     margin_top_mm: number;
     margin_right_mm: number;
     margin_bottom_mm: number;
+    paper_width_mm: number;
+    paper_height_mm: number;
   }>("printer_capabilities", {
     printer,
     paperWidthMm,
@@ -88,6 +142,8 @@ export async function printerCapabilities(
     marginTopMm: r.margin_top_mm,
     marginRightMm: r.margin_right_mm,
     marginBottomMm: r.margin_bottom_mm,
+    paperWidthMm: r.paper_width_mm,
+    paperHeightMm: r.paper_height_mm,
   };
 }
 
@@ -112,6 +168,7 @@ export async function solveLayout(req: LayoutRequest): Promise<Layout> {
       margin_mm: req.marginMm,
       gutter_mm: req.gutterMm,
       align_top_left: req.alignTopLeft,
+      quarter_turn: req.quarterTurn ?? false,
     },
   });
 
@@ -216,7 +273,7 @@ export async function detectFace(
   width: number,
   height: number,
 ): Promise<FaceDetection | null> {
-  const r = await invoke<{
+  const r = await invokeWithPixels<{
     face_box: { x: number; y: number; width: number; height: number };
     right_eye: { x: number; y: number };
     left_eye: { x: number; y: number };
@@ -227,7 +284,7 @@ export async function detectFace(
     roll_deg: number;
     eye_distance_px: number;
     anchors_estimated: boolean;
-  } | null>("detect_face", { rgba: Array.from(rgba), width, height });
+  } | null>("detect_face", rgba, width, height);
 
   if (!r) return null;
   return {
@@ -324,36 +381,15 @@ export interface Mask {
   subjectRatio: number;
 }
 
-function toMask(r: {
-  width: number;
-  height: number;
-  data: number[];
-  backend: string;
-  subject_ratio: number;
-}): Mask {
-  return {
-    width: r.width,
-    height: r.height,
-    data: Uint8Array.from(r.data),
-    backend: r.backend,
-    subjectRatio: r.subject_ratio,
-  };
-}
-
-type RawMask = Parameters<typeof toMask>[0];
-
 /** Run background segmentation. Slow on the first call while the model loads. */
 export async function segmentBackground(
   rgba: Uint8ClampedArray,
   width: number,
   height: number,
 ): Promise<Mask> {
-  const r = await invoke<RawMask>("segment_background", {
-    rgba: Array.from(rgba),
-    width,
-    height,
-  });
-  return toMask(r);
+  return decodeMask(
+    await invokeWithPixels<ArrayBuffer>("segment_background", rgba, width, height),
+  );
 }
 
 export async function addMaskStroke(stroke: {
@@ -362,20 +398,20 @@ export async function addMaskStroke(stroke: {
   feather: number;
   points: Array<[number, number]>;
 }): Promise<Mask> {
-  return toMask(await invoke<RawMask>("add_mask_stroke", { stroke }));
+  return decodeMask(await invoke<ArrayBuffer>("add_mask_stroke", { stroke }));
 }
 
 export async function undoMaskStroke(): Promise<Mask> {
-  return toMask(await invoke<RawMask>("undo_mask_stroke"));
+  return decodeMask(await invoke<ArrayBuffer>("undo_mask_stroke"));
 }
 
 export async function resetMaskEdits(): Promise<Mask> {
-  return toMask(await invoke<RawMask>("reset_mask_edits"));
+  return decodeMask(await invoke<ArrayBuffer>("reset_mask_edits"));
 }
 
 /** Tighten or loosen the mask edge. 128 leaves the model's own edge alone. */
 export async function setMaskThreshold(threshold: number): Promise<Mask> {
-  return toMask(await invoke<RawMask>("set_mask_threshold", { threshold }));
+  return decodeMask(await invoke<ArrayBuffer>("set_mask_threshold", { threshold }));
 }
 
 export async function clearMask(): Promise<void> {
@@ -387,11 +423,7 @@ export async function backgroundUniformity(
   width: number,
   height: number,
 ): Promise<number | null> {
-  return invoke<number | null>("background_uniformity", {
-    rgba: Array.from(rgba),
-    width,
-    height,
-  });
+  return invokeWithPixels<number | null>("background_uniformity", rgba, width, height);
 }
 
 /* Specs and validation. */
@@ -407,6 +439,9 @@ export interface SpecSummary {
   cutMarks: boolean;
   backgroundRgb: [number, number, number] | null;
   freeMode: boolean;
+  /** "verified" means a named regulation stands behind the numbers. */
+  confidence: "verified" | "baseline" | "community";
+  country: string | null;
 }
 
 export async function listSpecs(lang = "hr"): Promise<SpecSummary[]> {
@@ -422,6 +457,8 @@ export async function listSpecs(lang = "hr"): Promise<SpecSummary[]> {
       cut_marks: boolean;
       background_rgb: [number, number, number] | null;
       free_mode: boolean;
+      confidence: "verified" | "baseline" | "community";
+      country: string | null;
     }>
   >("list_specs", { lang });
 
@@ -436,6 +473,8 @@ export async function listSpecs(lang = "hr"): Promise<SpecSummary[]> {
     cutMarks: s.cut_marks,
     backgroundRgb: s.background_rgb,
     freeMode: s.free_mode,
+    confidence: s.confidence,
+    country: s.country,
   }));
 }
 
@@ -473,19 +512,22 @@ export async function analyseImage(
   height: number,
   face?: { x: number; y: number; width: number; height: number } | null,
 ): Promise<ImageStats> {
-  const r = await invoke<{
+  // Absent headers mean "measure the whole image", so a missing face simply
+  // omits them rather than sending nulls.
+  const faceHeaders: Record<string, string> = face
+    ? {
+        "x-face-x": String(Math.max(0, Math.round(face.x))),
+        "x-face-y": String(Math.max(0, Math.round(face.y))),
+        "x-face-w": String(Math.round(face.width)),
+        "x-face-h": String(Math.round(face.height)),
+      }
+    : {};
+
+  const r = await invokeWithPixels<{
     clipped_shadows: number;
     clipped_highlights: number;
     sharpness: number | null;
-  }>("analyse_image", {
-    rgba: Array.from(rgba),
-    width,
-    height,
-    faceX: face ? Math.max(0, Math.round(face.x)) : null,
-    faceY: face ? Math.max(0, Math.round(face.y)) : null,
-    faceWidth: face ? Math.round(face.width) : null,
-    faceHeight: face ? Math.round(face.height) : null,
-  });
+  }>("analyse_image", rgba, width, height, faceHeaders);
   return {
     clippedShadows: r.clipped_shadows,
     clippedHighlights: r.clipped_highlights,
@@ -588,6 +630,7 @@ export async function solveMixedLayout(req: {
   groups: PhotoGroup[];
   marginMm: number;
   gutterMm: number;
+  quarterTurn?: boolean;
 }): Promise<MixedLayout> {
   const r = await invoke<{
     placements: Array<{
@@ -606,6 +649,7 @@ export async function solveMixedLayout(req: {
       groups: toGroups(req.groups),
       margin_mm: req.marginMm,
       gutter_mm: req.gutterMm,
+      quarter_turn: req.quarterTurn ?? false,
     },
   });
 
@@ -622,10 +666,15 @@ export async function solveMixedLayout(req: {
   };
 }
 
-/** Serialise a photo payload for either print command. */
+/**
+ * Serialise a photo payload's parameters. The pixels do not travel here.
+ *
+ * They go in the raw request body instead, built by `printBody`: as a JSON
+ * number array a 10.7MB photo becomes 32MB of text costing roughly two seconds
+ * to encode and parse.
+ */
 function photoToWire(photo: PhotoPayload) {
   return {
-    rgba: Array.from(photo.rgba),
     width: photo.width,
     height: photo.height,
     crop_x: photo.cropX,
@@ -635,7 +684,6 @@ function photoToWire(photo: PhotoPayload) {
     rotation_deg: photo.rotationDeg,
     background: photo.background
       ? {
-          mask: Array.from(photo.background.mask),
           mask_width: photo.background.maskWidth,
           mask_height: photo.background.maskHeight,
           colour: photo.background.colour,
@@ -652,6 +700,54 @@ function photoToWire(photo: PhotoPayload) {
   };
 }
 
+/**
+ * The pixel buffers for a print request: the photo, then the mask.
+ *
+ * No framing between them — both lengths follow from the dimensions already in
+ * the JSON parameters, and Rust splits on exactly that.
+ */
+function printBody(photo: PhotoPayload | null | undefined): ArrayBuffer {
+  if (!photo) return new ArrayBuffer(0);
+
+  const rgba = new Uint8Array(
+    photo.rgba.buffer,
+    photo.rgba.byteOffset,
+    photo.rgba.byteLength,
+  );
+  const mask = photo.background?.mask;
+
+  const out = new Uint8Array(rgba.byteLength + (mask?.byteLength ?? 0));
+  out.set(rgba, 0);
+  if (mask) out.set(mask, rgba.byteLength);
+  return out.buffer;
+}
+
+/**
+ * Invoke a print command: parameters as a JSON header, pixels as the body.
+ *
+ * `invoke` accepts either JSON arguments or a raw body, never both, so the
+ * parameters ride along in a header while the body stays pure pixels.
+ */
+async function invokePrint(
+  cmd: string,
+  req: unknown,
+  photo: PhotoPayload | null | undefined,
+): Promise<number> {
+  // The parameters lead the body as UTF-8 JSON, length-prefixed, followed by
+  // the pixels. Keeping them in the body rather than a header avoids having to
+  // escape a printer name — Croatian installs routinely contain č, ž and ć,
+  // which headers cannot carry.
+  const json = new TextEncoder().encode(JSON.stringify(req));
+  const pixels = new Uint8Array(printBody(photo));
+
+  const out = new Uint8Array(4 + json.byteLength + pixels.byteLength);
+  new DataView(out.buffer).setUint32(0, json.byteLength, true);
+  out.set(json, 4);
+  out.set(pixels, 4 + json.byteLength);
+
+  return invoke<number>(cmd, out.buffer as ArrayBuffer);
+}
+
 export async function printMixedSheet(args: {
   printer: string;
   paperWidthMm: number;
@@ -659,19 +755,29 @@ export async function printMixedSheet(args: {
   groups: PhotoGroup[];
   marginMm: number;
   gutterMm: number;
+  quarterTurn?: boolean;
+  /** Turn the picture inside its frame, independent of the frame's shape. */
+  turnPhoto?: boolean;
+  /** Print faint guides showing where each photo ends, for cutting by hand. */
+  cutMarks?: boolean;
   photo?: PhotoPayload | null;
 }): Promise<number> {
-  return invoke<number>("print_mixed_sheet", {
-    req: {
+  return invokePrint(
+    "print_mixed_sheet",
+    {
       printer: args.printer,
       paper_width_mm: args.paperWidthMm,
       paper_height_mm: args.paperHeightMm,
       groups: toGroups(args.groups),
       margin_mm: args.marginMm,
       gutter_mm: args.gutterMm,
+      quarter_turn: args.quarterTurn ?? false,
+      turn_photo: args.turnPhoto ?? false,
+      cut_marks: args.cutMarks ?? false,
       photo: args.photo ? photoToWire(args.photo) : null,
     },
-  });
+    args.photo,
+  );
 }
 
 /* Presets: named sets of settings, stored in config.toml. */
@@ -765,6 +871,63 @@ function toSummaries(raw: Array<{ name: string; saved_at: string }>): PresetSumm
   return raw.map((s) => ({ name: s.name, savedAt: s.saved_at }));
 }
 
+export interface SheetSettings {
+  paperId: string;
+  count: number;
+  marginMm: number;
+  gutterMm: number;
+  alignTopLeft: boolean;
+  cutMarks: boolean;
+  /** Turn each photo frame on its side: 35x45 becomes 45x35. */
+  quarterTurn: boolean;
+  /** Turn the picture inside its frame. */
+  turnPhoto: boolean;
+  printer: string;
+}
+
+interface RawSheetSettings {
+  paper_id: string;
+  count: number;
+  margin_mm: number;
+  gutter_mm: number;
+  align_top_left: boolean;
+  cut_marks: boolean;
+  quarter_turn: boolean;
+  turn_photo: boolean;
+  printer: string;
+}
+
+export async function getSheetSettings(): Promise<SheetSettings> {
+  const r = await invoke<RawSheetSettings>("get_sheet_settings");
+  return {
+    paperId: r.paper_id,
+    count: r.count,
+    marginMm: r.margin_mm,
+    gutterMm: r.gutter_mm,
+    alignTopLeft: r.align_top_left,
+    cutMarks: r.cut_marks,
+    quarterTurn: r.quarter_turn,
+    turnPhoto: r.turn_photo,
+    printer: r.printer,
+  };
+}
+
+export async function saveSheetSettings(s: SheetSettings): Promise<void> {
+  return invoke<void>("save_sheet_settings", {
+    settings: {
+      paper_id: s.paperId,
+      count: s.count,
+      margin_mm: s.marginMm,
+      gutter_mm: s.gutterMm,
+      align_top_left: s.alignTopLeft,
+      cut_marks: s.cutMarks,
+      quarter_turn: s.quarterTurn,
+      turn_photo: s.turnPhoto,
+      printer: s.printer,
+    } satisfies RawSheetSettings,
+  });
+}
+
 export async function listPresets(): Promise<PresetSummary[]> {
   return toSummaries(await invoke<Array<{ name: string; saved_at: string }>>("list_presets"));
 }
@@ -799,11 +962,17 @@ export async function printSheet(args: {
   marginMm: number;
   gutterMm: number;
   alignTopLeft: boolean;
+  quarterTurn?: boolean;
+  /** Turn the picture inside its frame, independent of the frame's shape. */
+  turnPhoto?: boolean;
+  /** Print faint guides showing where each photo ends, for cutting by hand. */
+  cutMarks?: boolean;
   /** Omit to print the layout as plain rectangles, without using photo paper. */
   photo?: PhotoPayload | null;
 }): Promise<number> {
-  return invoke<number>("print_sheet", {
-    req: {
+  return invokePrint(
+    "print_sheet",
+    {
       printer: args.printer,
       paper_width_mm: args.paperWidthMm,
       paper_height_mm: args.paperHeightMm,
@@ -813,7 +982,11 @@ export async function printSheet(args: {
       margin_mm: args.marginMm,
       gutter_mm: args.gutterMm,
       align_top_left: args.alignTopLeft,
+      quarter_turn: args.quarterTurn ?? false,
+      turn_photo: args.turnPhoto ?? false,
+      cut_marks: args.cutMarks ?? false,
       photo: args.photo ? photoToWire(args.photo) : null,
     },
-  });
+    args.photo,
+  );
 }

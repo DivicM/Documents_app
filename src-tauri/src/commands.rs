@@ -31,6 +31,28 @@ impl UiError {
 
 type CmdResult<T> = Result<T, UiError>;
 
+/// Read a `u32` header, which is how image dimensions travel alongside a raw
+/// body.
+///
+/// Commands taking a whole photo receive it as raw bytes rather than a JSON
+/// number array: a 2000x1333 image is 10.7MB, which as JSON becomes 32MB of
+/// text and costs around two seconds to encode and parse.
+pub fn header_u32(req: &tauri::ipc::Request<'_>, name: &str) -> CmdResult<u32> {
+    req.headers()
+        .get(name)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<u32>().ok())
+        .ok_or_else(|| UiError::new("error.image.empty"))
+}
+
+/// Borrow the raw body of a request, rejecting a JSON one.
+pub fn raw_body<'a>(req: &'a tauri::ipc::Request<'_>) -> CmdResult<&'a [u8]> {
+    match req.body() {
+        tauri::ipc::InvokeBody::Raw(bytes) => Ok(bytes),
+        tauri::ipc::InvokeBody::Json(_) => Err(UiError::new("error.image.decode_failed")),
+    }
+}
+
 #[cfg(windows)]
 fn backend() -> WindowsPrintBackend {
     WindowsPrintBackend::new()
@@ -70,6 +92,11 @@ pub struct PrinterCapabilitiesDto {
     pub margin_top_mm: f64,
     pub margin_right_mm: f64,
     pub margin_bottom_mm: f64,
+    /// The paper the driver is set to, which is not necessarily the one the
+    /// user picked in the app. A dye-sublimation photo printer is configured
+    /// for one size and cannot be told otherwise from here.
+    pub paper_width_mm: f64,
+    pub paper_height_mm: f64,
 }
 
 #[tauri::command]
@@ -88,6 +115,10 @@ pub fn printer_capabilities(
         let m = b.hardware_margins_mm(&printer, paper).map_err(|e| {
             UiError::with("error.printer.margins_failed", serde_json::json!({ "detail": e.to_string() }))
         })?;
+        // Falls back to the requested size if the driver will not say, which
+        // is no worse than the old behaviour of always assuming it.
+        let dp = b.device_paper(&printer).ok();
+
         Ok(PrinterCapabilitiesDto {
             dpi_x: dpi.x,
             dpi_y: dpi.y,
@@ -95,6 +126,8 @@ pub fn printer_capabilities(
             margin_top_mm: m.top_mm,
             margin_right_mm: m.right_mm,
             margin_bottom_mm: m.bottom_mm,
+            paper_width_mm: dp.map(|d| d.physical_width_mm).unwrap_or(paper_width_mm),
+            paper_height_mm: dp.map(|d| d.physical_height_mm).unwrap_or(paper_height_mm),
         })
     }
     #[cfg(not(windows))]
@@ -114,6 +147,10 @@ pub struct LayoutRequest {
     pub margin_mm: f64,
     pub gutter_mm: f64,
     pub align_top_left: bool,
+    /// Turn the frame on its side, as [`PrintSheetRequest::quarter_turn`] does.
+    /// The preview must solve the same layout the printer will.
+    #[serde(default)]
+    pub quarter_turn: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -134,13 +171,20 @@ pub struct LayoutDto {
 
 #[tauri::command]
 pub fn solve_layout(req: LayoutRequest) -> CmdResult<LayoutDto> {
+    let (photo_w, photo_h) = if req.quarter_turn {
+        (req.photo_height_mm, req.photo_width_mm)
+    } else {
+        (req.photo_width_mm, req.photo_height_mm)
+    };
+
     let cfg = LayoutConfig {
         paper: SizeMm::new(req.paper_width_mm, req.paper_height_mm),
-        photo: SizeMm::new(req.photo_width_mm, req.photo_height_mm),
+        photo: SizeMm::new(photo_w, photo_h),
         count: req.count,
         margin_mm: req.margin_mm,
         gutter_mm: req.gutter_mm,
         alignment: if req.align_top_left { Alignment::TopLeft } else { Alignment::Center },
+        lock_orientation: req.quarter_turn,
     };
 
     let sheet = domain::layout::solve(&cfg).map_err(|e| match e {
@@ -192,6 +236,8 @@ pub struct MixedLayoutRequest {
     pub groups: Vec<PhotoGroupRequest>,
     pub margin_mm: f64,
     pub gutter_mm: f64,
+    #[serde(default)]
+    pub quarter_turn: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -212,11 +258,22 @@ pub struct MixedLayoutDto {
     pub unplaced: Vec<u32>,
 }
 
-fn to_groups(groups: &[PhotoGroupRequest]) -> Vec<domain::layout::PhotoGroup> {
+/// Convert the requested groups, optionally turning each frame on its side.
+///
+/// Turning swaps width and height before the solver runs, which is what makes a
+/// 35x45 frame become 45x35 with the face still upright inside it.
+fn to_groups_turned(
+    groups: &[PhotoGroupRequest],
+    quarter_turn: bool,
+) -> Vec<domain::layout::PhotoGroup> {
     groups
         .iter()
         .map(|g| domain::layout::PhotoGroup {
-            size: SizeMm::new(g.width_mm, g.height_mm),
+            size: if quarter_turn {
+                SizeMm::new(g.height_mm, g.width_mm)
+            } else {
+                SizeMm::new(g.width_mm, g.height_mm)
+            },
             count: g.count,
         })
         .collect()
@@ -235,12 +292,13 @@ fn map_layout_error(e: domain::layout::LayoutError) -> UiError {
 /// Arrange several photo sizes on one sheet (§7).
 #[tauri::command]
 pub fn solve_mixed_layout(req: MixedLayoutRequest) -> CmdResult<MixedLayoutDto> {
-    let groups = to_groups(&req.groups);
-    let sheet = domain::layout::solve_mixed(
+    let groups = to_groups_turned(&req.groups, req.quarter_turn);
+    let sheet = domain::layout::solve_mixed_with(
         SizeMm::new(req.paper_width_mm, req.paper_height_mm),
         &groups,
         req.margin_mm,
         req.gutter_mm,
+        req.quarter_turn,
     )
     .map_err(map_layout_error)?;
 
@@ -349,6 +407,29 @@ const CALIBRATION_PAPER: (f64, f64) = (210.0, 297.0);
 ///
 /// Deliberately never fails: a missing or unreadable config must not stop
 /// someone printing, it just means no correction is applied.
+/// The paper the driver is set to, falling back to what the caller asked for.
+///
+/// The driver wins: a dye-sublimation photo printer is configured for one paper
+/// size and ignores anything else sent to it, so laying out for a different
+/// size is what puts photographs off the edge of the sheet. A Citizen CY-02
+/// reports 156x105mm, which is both a different size and a different
+/// orientation from the 100x150mm a user would naturally pick.
+#[cfg(windows)]
+fn device_paper_or(
+    backend: &WindowsPrintBackend,
+    printer: &str,
+    fallback_w: f64,
+    fallback_h: f64,
+) -> (f64, f64) {
+    match backend.device_paper(printer) {
+        // Guard against a driver reporting nonsense rather than failing.
+        Ok(dp) if dp.physical_width_mm > 1.0 && dp.physical_height_mm > 1.0 => {
+            (dp.physical_width_mm, dp.physical_height_mm)
+        }
+        _ => (fallback_w, fallback_h),
+    }
+}
+
 #[cfg(windows)]
 fn calibration_for(
     printer: &str,
@@ -444,12 +525,14 @@ pub fn print_calibration_square(printer: String, apply_calibration: bool) -> Cmd
     }
 }
 
-/// The photo to place on the sheet: raw pixels plus the region to use.
+/// The photo to place on the sheet: everything except the pixels themselves.
 ///
-/// Pixels come from the webview's canvas, which has already decoded the file.
+/// Pixels come from the webview's canvas, which has already decoded the file,
+/// and travel in the raw request body rather than in this struct. A 10.7MB
+/// photo as a JSON number array becomes 32MB of text and costs about two
+/// seconds to encode and parse.
 #[derive(Debug, Deserialize)]
 pub struct PhotoPayload {
-    pub rgba: Vec<u8>,
     pub width: u32,
     pub height: u32,
     pub crop_x: f64,
@@ -467,13 +550,68 @@ pub struct PhotoPayload {
     pub adjustments: Option<domain::adjust::Adjustments>,
 }
 
-/// A mask plus the colour to put behind the subject.
+/// Mask dimensions and the colour to put behind the subject. The mask bytes
+/// follow the photo in the raw body.
 #[derive(Debug, Deserialize)]
 pub struct BackgroundPayload {
-    pub mask: Vec<u8>,
     pub mask_width: u32,
     pub mask_height: u32,
     pub colour: [u8; 3],
+}
+
+/// The pixel buffers that accompany a print request, split out of the raw body.
+///
+/// The photo is followed by the mask with nothing between them: both lengths
+/// are known from the JSON parameters, so no framing is needed.
+pub struct PrintPixels<'a> {
+    pub rgba: &'a [u8],
+    pub mask: &'a [u8],
+}
+
+/// Parse a print request body: a length-prefixed JSON header, then the pixels.
+///
+/// `invoke` carries either JSON arguments or a raw body, never both, so the
+/// parameters lead the body instead of being a separate argument. Returns the
+/// parsed parameters and the remaining bytes.
+fn parse_print_request<'a, T: serde::de::DeserializeOwned>(
+    request: &'a tauri::ipc::Request<'_>,
+) -> CmdResult<(T, &'a [u8])> {
+    let body = raw_body(request)?;
+    if body.len() < 4 {
+        return Err(UiError::new("error.image.decode_failed"));
+    }
+
+    let json_len = u32::from_le_bytes([body[0], body[1], body[2], body[3]]) as usize;
+    let rest = body.get(4..).ok_or_else(|| UiError::new("error.image.decode_failed"))?;
+    let json = rest.get(..json_len).ok_or_else(|| UiError::new("error.image.decode_failed"))?;
+
+    let req: T = serde_json::from_slice(json).map_err(|e| {
+        UiError::with("error.image.decode_failed", serde_json::json!({ "detail": e.to_string() }))
+    })?;
+    Ok((req, &rest[json_len..]))
+}
+
+/// Split the pixel section into the photo and, if one is expected, the mask.
+///
+/// Validates both lengths up front. Getting this wrong would index out of
+/// bounds deep inside the renderer, so it fails here with a clear message.
+fn split_print_body<'a>(body: &'a [u8], photo: &PhotoPayload) -> CmdResult<PrintPixels<'a>> {
+    let photo_len = photo.width as usize * photo.height as usize * 4;
+    let mask_len = photo
+        .background
+        .as_ref()
+        .map(|b| b.mask_width as usize * b.mask_height as usize)
+        .unwrap_or(0);
+
+    let expected = photo_len + mask_len;
+    if body.len() != expected {
+        return Err(UiError::with(
+            "error.image.size_mismatch",
+            serde_json::json!({ "expected": expected, "got": body.len() }),
+        ));
+    }
+
+    Ok(PrintPixels { rgba: &body[..photo_len], mask: &body[photo_len..] })
 }
 
 #[derive(Debug, Deserialize)]
@@ -487,6 +625,19 @@ pub struct PrintSheetRequest {
     pub margin_mm: f64,
     pub gutter_mm: f64,
     pub align_top_left: bool,
+    /// Turn the photo frame on its side: a 35x45 print becomes 45x35.
+    ///
+    /// Applied by swapping the requested width and height before the layout is
+    /// solved, so the solver, the renderer and the crop all agree.
+    #[serde(default)]
+    pub quarter_turn: bool,
+    /// Turn the picture inside its frame. Independent of `quarter_turn`, which
+    /// only reshapes the rectangle.
+    #[serde(default)]
+    pub turn_photo: bool,
+    /// Print faint guides showing where each photo ends, for cutting by hand.
+    #[serde(default)]
+    pub cut_marks: bool,
     /// Omitted to print the layout as plain rectangles, which is useful for
     /// checking geometry without using up photo paper.
     pub photo: Option<PhotoPayload>,
@@ -500,6 +651,15 @@ pub struct PrintMixedRequest {
     pub groups: Vec<PhotoGroupRequest>,
     pub margin_mm: f64,
     pub gutter_mm: f64,
+    /// Turn each frame on its side.
+    #[serde(default)]
+    pub quarter_turn: bool,
+    /// Turn the picture inside its frame.
+    #[serde(default)]
+    pub turn_photo: bool,
+    /// Print faint guides showing where each photo ends.
+    #[serde(default)]
+    pub cut_marks: bool,
     pub photo: Option<PhotoPayload>,
 }
 
@@ -508,24 +668,16 @@ pub struct PrintMixedRequest {
 /// Shared by both print paths so a change here cannot make the mixed sheet
 /// composite differently from the ordinary one.
 #[cfg(windows)]
-fn prepared_pixels(p: &PhotoPayload) -> CmdResult<Vec<u8>> {
-    let expected = p.width as usize * p.height as usize * 4;
-    if p.rgba.len() != expected {
-        return Err(UiError::with(
-            "error.image.size_mismatch",
-            serde_json::json!({ "expected": expected, "got": p.rgba.len() }),
-        ));
-    }
-
+fn prepared_pixels(p: &PhotoPayload, px: &PrintPixels<'_>) -> CmdResult<Vec<u8>> {
     // Order matters and must match the preview: tone first, then background.
     // Adjusting after replacement would shift the background colour the user
     // picked.
-    let mut pixels = p.rgba.clone();
+    let mut pixels = px.rgba.to_vec();
     if let Some(adj) = &p.adjustments {
         domain::adjust::apply_adjustments(&mut pixels, adj);
     }
     if let Some(bg) = &p.background {
-        let mask = domain::mask::AlphaMask::new(bg.mask_width, bg.mask_height, bg.mask.clone())
+        let mask = domain::mask::AlphaMask::new(bg.mask_width, bg.mask_height, px.mask.to_vec())
             .ok_or_else(|| UiError::new("error.mask.size_mismatch"))?;
         domain::mask::composite_background(&mut pixels, p.width, p.height, &mask, bg.colour);
     }
@@ -533,8 +685,12 @@ fn prepared_pixels(p: &PhotoPayload) -> CmdResult<Vec<u8>> {
 }
 
 /// Print a sheet holding several photo sizes at once (§7).
+///
+/// Parameters arrive as JSON in the `req` argument; the photo and mask pixels
+/// arrive as the raw request body, for the reason given on [`PhotoPayload`].
 #[tauri::command]
-pub fn print_mixed_sheet(req: PrintMixedRequest) -> CmdResult<u32> {
+pub fn print_mixed_sheet(request: tauri::ipc::Request<'_>) -> CmdResult<u32> {
+    let (req, pixels) = parse_print_request::<PrintMixedRequest>(&request)?;
     #[cfg(windows)]
     {
         use domain::layout::Placement;
@@ -543,42 +699,54 @@ pub fn print_mixed_sheet(req: PrintMixedRequest) -> CmdResult<u32> {
         };
         use domain::resample::ImageRef;
 
-        let paper = SizeMm::new(req.paper_width_mm, req.paper_height_mm);
-        let groups = to_groups(&req.groups);
-        let mixed = domain::layout::solve_mixed(paper, &groups, req.margin_mm, req.gutter_mm)
-            .map_err(map_layout_error)?;
+        let b = backend();
+        let dpi = b.device_dpi(&req.printer).map_err(|e| {
+            UiError::with("error.printer.dpi_failed", serde_json::json!({ "detail": e.to_string() }))
+        })?;
+
+        // Resolve the paper before laying anything out.
+        let (paper_w, paper_h) = device_paper_or(&b, &req.printer, req.paper_width_mm, req.paper_height_mm);
+        let paper = SizeMm::new(paper_w, paper_h);
+
+        let groups = to_groups_turned(&req.groups, req.quarter_turn);
+        let mixed = domain::layout::solve_mixed_with(
+            paper,
+            &groups,
+            req.margin_mm,
+            req.gutter_mm,
+            req.quarter_turn,
+        )
+        .map_err(map_layout_error)?;
 
         if mixed.placements.is_empty() {
             return Err(UiError::new("error.print.nothing_to_print"));
         }
 
-        let b = backend();
-        let dpi = b.device_dpi(&req.printer).map_err(|e| {
-            UiError::with("error.printer.dpi_failed", serde_json::json!({ "detail": e.to_string() }))
-        })?;
         let m = b
             .hardware_margins_mm(
                 &req.printer,
-                PaperSize { width_mm: req.paper_width_mm, height_mm: req.paper_height_mm },
+                PaperSize { width_mm: paper_w, height_mm: paper_h },
             )
             .unwrap_or(platform::print::Margins::ZERO);
 
         let printable = SizeMm::new(
-            req.paper_width_mm - m.left_mm - m.right_mm,
-            req.paper_height_mm - m.top_mm - m.bottom_mm,
+            paper_w - m.left_mm - m.right_mm,
+            paper_h - m.top_mm - m.bottom_mm,
         );
 
         let mut params = RenderParams::new(dpi.x as f64, dpi.y as f64);
         params.origin = PrintableOrigin { left_mm: m.left_mm, top_mm: m.top_mm };
-        params.calibration =
-            calibration_for(&req.printer, req.paper_width_mm, req.paper_height_mm, false);
+        params.calibration = calibration_for(&req.printer, paper_w, paper_h, false);
+        params.turn_photo = req.turn_photo;
+        params.cut_marks = req.cut_marks;
 
         let placements: Vec<Placement> =
             mixed.placements.iter().map(|g| g.placement).collect();
 
         let raster = match &req.photo {
             Some(p) => {
-                let pixels = prepared_pixels(p)?;
+                let split = split_print_body(pixels, p)?;
+                let pixels = prepared_pixels(p, &split)?;
                 let image = ImageRef::new(&pixels, p.width, p.height)
                     .ok_or_else(|| UiError::new("error.image.decode_failed"))?;
                 let source = PhotoSource {
@@ -617,14 +785,18 @@ pub fn print_mixed_sheet(req: PrintMixedRequest) -> CmdResult<u32> {
     }
     #[cfg(not(windows))]
     {
-        let _ = req;
+        let _ = (req, pixels);
         Err(UiError::new("error.platform.unsupported"))
     }
 }
 
 /// Print the laid-out sheet, with the stored calibration applied.
+///
+/// Parameters arrive as JSON in `req`; the photo and mask pixels arrive as the
+/// raw request body, for the reason given on [`PhotoPayload`].
 #[tauri::command]
-pub fn print_sheet(req: PrintSheetRequest) -> CmdResult<u32> {
+pub fn print_sheet(request: tauri::ipc::Request<'_>) -> CmdResult<u32> {
+    let (req, pixels) = parse_print_request::<PrintSheetRequest>(&request)?;
     #[cfg(windows)]
     {
         use domain::render::{
@@ -632,13 +804,35 @@ pub fn print_sheet(req: PrintSheetRequest) -> CmdResult<u32> {
         };
         use domain::resample::ImageRef;
 
+        // Turning the frame is a swap of the requested print size, done before
+        // anything else sees it. The crop the frontend sent already has the
+        // photo's aspect ratio, so the renderer fills the turned frame with the
+        // same upright pixels.
+        let (photo_w, photo_h) = if req.quarter_turn {
+            (req.photo_height_mm, req.photo_width_mm)
+        } else {
+            (req.photo_width_mm, req.photo_height_mm)
+        };
+
+        let b = backend();
+        let dpi = b.device_dpi(&req.printer).map_err(|e| {
+            UiError::with("error.printer.dpi_failed", serde_json::json!({ "detail": e.to_string() }))
+        })?;
+
+        // Resolve the paper before laying anything out.
+        let (paper_w, paper_h) =
+            device_paper_or(&b, &req.printer, req.paper_width_mm, req.paper_height_mm);
+
         let cfg = LayoutConfig {
-            paper: SizeMm::new(req.paper_width_mm, req.paper_height_mm),
-            photo: SizeMm::new(req.photo_width_mm, req.photo_height_mm),
+            paper: SizeMm::new(paper_w, paper_h),
+            photo: SizeMm::new(photo_w, photo_h),
             count: req.count,
             margin_mm: req.margin_mm,
             gutter_mm: req.gutter_mm,
             alignment: if req.align_top_left { Alignment::TopLeft } else { Alignment::Center },
+            // The turned frame is the point, so the solver must not undo it by
+            // rotating back to whichever orientation packs denser.
+            lock_orientation: req.quarter_turn,
         };
         let sheet = domain::layout::solve(&cfg)
             .map_err(|_| UiError::new("error.layout.invalid_dimensions"))?;
@@ -647,30 +841,28 @@ pub fn print_sheet(req: PrintSheetRequest) -> CmdResult<u32> {
             return Err(UiError::new("error.print.nothing_to_print"));
         }
 
-        let b = backend();
-        let dpi = b.device_dpi(&req.printer).map_err(|e| {
-            UiError::with("error.printer.dpi_failed", serde_json::json!({ "detail": e.to_string() }))
-        })?;
         let m = b
             .hardware_margins_mm(
                 &req.printer,
-                PaperSize { width_mm: req.paper_width_mm, height_mm: req.paper_height_mm },
+                PaperSize { width_mm: paper_w, height_mm: paper_h },
             )
             .unwrap_or(platform::print::Margins::ZERO);
 
         let printable = SizeMm::new(
-            req.paper_width_mm - m.left_mm - m.right_mm,
-            req.paper_height_mm - m.top_mm - m.bottom_mm,
+            paper_w - m.left_mm - m.right_mm,
+            paper_h - m.top_mm - m.bottom_mm,
         );
 
         let mut params = RenderParams::new(dpi.x as f64, dpi.y as f64);
         params.origin = PrintableOrigin { left_mm: m.left_mm, top_mm: m.top_mm };
-        params.calibration =
-            calibration_for(&req.printer, req.paper_width_mm, req.paper_height_mm, false);
+        params.calibration = calibration_for(&req.printer, paper_w, paper_h, false);
+        params.turn_photo = req.turn_photo;
+        params.cut_marks = req.cut_marks;
 
         let raster = match &req.photo {
             Some(p) => {
-                let pixels = prepared_pixels(p)?;
+                let split = split_print_body(pixels, p)?;
+                let pixels = prepared_pixels(p, &split)?;
                 let image = ImageRef::new(&pixels, p.width, p.height)
                     .ok_or_else(|| UiError::new("error.image.decode_failed"))?;
                 let source = PhotoSource {
@@ -700,7 +892,7 @@ pub fn print_sheet(req: PrintSheetRequest) -> CmdResult<u32> {
     }
     #[cfg(not(windows))]
     {
-        let _ = req;
+        let _ = (req, pixels);
         Err(UiError::new("error.platform.unsupported"))
     }
 }

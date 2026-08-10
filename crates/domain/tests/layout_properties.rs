@@ -19,14 +19,17 @@ fn config_strategy() -> impl Strategy<Value = LayoutConfig> {
         0.0f64..15.0,   // margin
         0.0f64..15.0,   // gutter
         prop::bool::ANY,
+        // Locked orientation must satisfy the same invariants as free.
+        prop::bool::ANY,
     )
-        .prop_map(|(pw, ph, iw, ih, count, margin, gutter, center)| LayoutConfig {
+        .prop_map(|(pw, ph, iw, ih, count, margin, gutter, center, locked)| LayoutConfig {
             paper: SizeMm::new(pw, ph),
             photo: SizeMm::new(iw, ih),
             count,
             margin_mm: margin,
             gutter_mm: gutter,
             alignment: if center { Alignment::Center } else { Alignment::TopLeft },
+            lock_orientation: locked,
         })
 }
 
@@ -112,8 +115,14 @@ proptest! {
 
     /// The solver must never pick the worse orientation. Recomputing capacity
     /// naively for both and taking the max has to agree with what it returned.
+    ///
+    /// Only when it is free to choose: `lock_orientation` deliberately gives up
+    /// capacity to keep the requested shape, and is covered separately.
     #[test]
     fn chosen_capacity_is_the_maximum_available(cfg in config_strategy()) {
+        if cfg.lock_orientation {
+            return Ok(());
+        }
         if let Ok(sheet) = solve(&cfg) {
             let usable_w = cfg.paper.width - 2.0 * cfg.margin_mm;
             let usable_h = cfg.paper.height - 2.0 * cfg.margin_mm;
@@ -132,6 +141,23 @@ proptest! {
             let portrait = fits(usable_w, cfg.photo.width) * fits(usable_h, cfg.photo.height);
             let landscape = fits(usable_w, cfg.photo.height) * fits(usable_h, cfg.photo.width);
             prop_assert_eq!(sheet.capacity_per_sheet, portrait.max(landscape));
+        }
+    }
+
+    /// A locked layout prints exactly the shape it was given and never rotates.
+    /// This is the whole point of the flag, so it is asserted over the same
+    /// generated space as everything else rather than on one example.
+    #[test]
+    fn locked_layouts_keep_the_requested_shape(cfg in config_strategy()) {
+        if !cfg.lock_orientation {
+            return Ok(());
+        }
+        if let Ok(sheet) = solve(&cfg) {
+            prop_assert_eq!(sheet.orientation, Orientation::Portrait);
+            for p in &sheet.placements {
+                prop_assert!((p.size.width - cfg.photo.width).abs() < EPS);
+                prop_assert!((p.size.height - cfg.photo.height).abs() < EPS);
+            }
         }
     }
 }

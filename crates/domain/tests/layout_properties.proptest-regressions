@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc fbd026c66283eacecfbe398e81024906827933a5da1ec40172433589e7ac10b4 # shrinks to cfg = LayoutConfig { paper: SizeMm { width: 431.0209824831581, height: 464.03360152683007 }, photo: SizeMm { width: 5.0, height: 86.3103616547854 }, count: 0, margin_mm: 2.615439201985582, gutter_mm: 7.796578399226251, alignment: TopLeft, lock_orientation: true }
+cc 2dcb72c6e152579a11378c9b4e67e7f592a23e29c74727642f5810f6ad904010 # shrinks to cfg = LayoutConfig { paper: SizeMm { width: 126.76725223774564, height: 211.09597682967177 }, photo: SizeMm { width: 5.0, height: 5.0 }, count: 6, margin_mm: 14.743664998851829, gutter_mm: 0.0, alignment: Center, lock_orientation: false }

@@ -61,20 +61,49 @@ h2:first-child {
 
 .columns {
   display: grid;
-  grid-template-columns: 240px minmax(0, 1fr) minmax(0, 0.8fr) 280px;
   gap: 18px;
   align-items: start;
 }
 
-@media (max-width: 1500px) {
-  .columns {
-    grid-template-columns: 240px minmax(0, 1fr) 280px;
-  }
+/* Step 3: photo on the left, its controls on the right. */
+.columns-edit {
+  grid-template-columns: minmax(0, 1fr) 340px;
+}
+
+/*
+  The app fills the window and only the inner panes scroll, so the header, the
+  step bar and the navigation stay put. 100vh minus their heights.
+*/
+.editor-photo,
+.editor-controls {
+  max-height: calc(100vh - 260px);
+  overflow-y: auto;
+}
+
+.editor-photo {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+/* Step 4 shows sheet settings, the preview and the printer side by side. */
+.columns-print {
+  grid-template-columns: 260px minmax(0, 1fr) 300px;
+}
+
+/*
+  `display: grid` and `display: flex` both beat the `hidden` attribute, so a
+  hidden panel would stay on screen. The wizard hides panels rather than
+  unmounting them — that is what preserves the loaded photo and its detection
+  across steps — so this rule is what makes the steps actually separate.
+*/
+[hidden] {
+  display: none !important;
 }
 
 @media (max-width: 1100px) {
-  .columns {
-    grid-template-columns: 1fr;
+  .columns-print {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 
@@ -212,6 +241,352 @@ button.small {
   gap: 6px;
   flex: 1;
   font-size: 13px;
+}
+
+/* --- Wizard --- */
+
+.stepbar {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 20px;
+}
+
+.step {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--muted);
+  text-align: left;
+  cursor: default;
+}
+
+.step-done {
+  cursor: pointer;
+  color: var(--text);
+}
+
+.step-done:hover {
+  border-color: var(--accent);
+}
+
+.step-active {
+  border-color: var(--accent);
+  color: var(--text);
+  font-weight: 600;
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.step-number {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  font-size: 12px;
+}
+
+.step-active .step-number {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.step-done .step-number {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.wizard-nav {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 20px;
+}
+
+.wizard-nav button {
+  min-width: 140px;
+  width: auto;
+}
+
+/* A step that is not the three-column editor gets a narrower, centred pane. */
+.step-pane {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 24px;
+}
+
+.step-pane-narrow {
+  max-width: 760px;
+  margin: 0 auto;
+}
+
+/* --- Step 1: drop zone --- */
+
+.dropzone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 340px;
+  padding: 32px;
+  border: 2px dashed var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.dropzone-active {
+  border-color: var(--accent);
+  background: #eef5f1;
+}
+
+.dropzone-icon {
+  font-size: 44px;
+  line-height: 1;
+}
+
+.dropzone-title {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.dropzone-or {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.dropzone button {
+  width: auto;
+  min-width: 180px;
+}
+
+.dropzone-hint,
+.dropzone-error,
+.dropzone-loaded {
+  margin: 4px 0 0;
+  text-align: center;
+}
+
+/* --- Step 2: format picker --- */
+
+.format-group {
+  margin-bottom: 20px;
+}
+
+.format-group-title {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  margin: 0 0 8px;
+}
+
+.format-card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  padding: 12px 14px;
+  margin-bottom: 8px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.format-card:hover {
+  border-color: var(--accent);
+}
+
+.format-card-selected {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+  background: #f2f8f5;
+}
+
+.format-card-size {
+  flex: none;
+  min-width: 108px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  font-size: 15px;
+}
+
+.format-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.format-card-name {
+  font-size: 14px;
+}
+
+.format-card-detail {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.format-card-warning {
+  font-size: 12px;
+  color: #8a6d1f;
+}
+
+/* --- Settings dialog --- */
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(20, 24, 28, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  z-index: 100;
+}
+
+.modal {
+  background: var(--panel);
+  border-radius: 10px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
+  width: 100%;
+  max-width: 640px;
+  max-height: calc(100vh - 48px);
+  display: flex;
+  flex-direction: column;
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 20px 0;
+}
+
+.modal-header h2 {
+  margin: 0;
+  font-size: 15px;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--text);
+}
+
+.modal-header button {
+  width: auto;
+}
+
+.modal-explain {
+  padding: 0 20px;
+  margin: 6px 0 0;
+}
+
+.modal-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 12px 20px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.modal-tab {
+  width: auto;
+  padding: 8px 14px;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  font-size: 13px;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.modal-tab:hover {
+  color: var(--text);
+}
+
+.modal-tab-active {
+  color: var(--text);
+  font-weight: 600;
+  border-bottom-color: var(--accent);
+}
+
+/* The only place scrolling is expected: settings can be longer than the
+   dialog, while the tabs and the save button stay visible. */
+.modal-body {
+  padding: 16px 20px;
+  overflow-y: auto;
+}
+
+.modal-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  padding: 12px 20px 16px;
+  border-top: 1px solid var(--border);
+}
+
+.modal-footer button {
+  width: auto;
+  min-width: 150px;
+}
+
+/* --- Step 3: collapsible editing groups --- */
+
+.edit-section {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  margin-bottom: 8px;
+  background: var(--panel);
+}
+
+.edit-section-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 12px;
+  background: none;
+  border: none;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.edit-section-header:hover {
+  background: var(--bg);
+}
+
+.edit-section-chevron {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.edit-section-title {
+  flex: 1;
+}
+
+.edit-section-body {
+  padding: 4px 12px 12px;
+  border-top: 1px solid var(--border);
 }
 
 /* One format in the mixed sheet: a label above its width/height/count inputs. */

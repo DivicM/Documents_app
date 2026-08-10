@@ -28,6 +28,11 @@
     "active": true,
     "targets": ["nsis"],
     "icon": ["icons/icon.ico"],
+    "resources": {
+      "../models/face_detection_yunet_2023mar.onnx": "models/",
+      "../models/u2netp.onnx": "models/",
+      "../runtime/onnxruntime.dll": "runtime/"
+    },
     "windows": {
       "nsis": {
         "installMode": "currentUser"

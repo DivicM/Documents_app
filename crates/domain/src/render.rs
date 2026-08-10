@@ -129,7 +129,29 @@ pub struct RenderParams {
     pub origin: PrintableOrigin,
     pub calibration: CalibrationScale,
     pub fill: [u8; 4],
+    /// Turn the photo inside its frame a quarter turn.
+    ///
+    /// Distinct from the frame's own orientation: the layout decides how the
+    /// rectangle sits on the paper, this decides which way up the picture is
+    /// inside it. Setting both gives a sideways face in a sideways frame.
+    pub turn_photo: bool,
+    /// Draw faint guides showing where each photo ends, for cutting by hand.
+    ///
+    /// Drawn in the paper margin and gutters only, never across a photograph:
+    /// a line over the picture would be printed into the finished photo and
+    /// could not be trimmed away.
+    pub cut_marks: bool,
 }
+
+/// The grey the cutting guides are drawn in.
+///
+/// Light enough not to read as part of the print, dark enough to follow with a
+/// blade under normal light. Measured against white paper: 210 is roughly an
+/// 18% grey.
+const CUT_MARK_GREY: u8 = 210;
+
+/// Length of each corner tick, in millimetres.
+const CUT_MARK_LENGTH_MM: f64 = 2.5;
 
 impl RenderParams {
     /// Uncalibrated, no unprintable border, black fill.
@@ -140,6 +162,8 @@ impl RenderParams {
             origin: PrintableOrigin::ZERO,
             calibration: CalibrationScale::IDENTITY,
             fill: [0, 0, 0, 255],
+            turn_photo: false,
+            cut_marks: false,
         }
     }
 }
@@ -236,7 +260,9 @@ pub fn render_sheet_with_photo(
         return raster;
     }
 
-    let rotate = first.orientation == Orientation::Landscape;
+    // XOR: the frame's own rotation and a requested turn compose, so turning a
+    // photo inside an already-rotated frame puts it back upright.
+    let rotate = (first.orientation == Orientation::Landscape) != params.turn_photo;
     // When the layout rotates the photo, the resampled bitmap is produced in
     // upright orientation and turned when it is written, so the crop keeps its
     // own aspect ratio rather than being squashed into the rotated box.
@@ -250,6 +276,9 @@ pub fn render_sheet_with_photo(
     for p in &sheet.placements {
         let r = placement_to_pixels(&correct(p, params, &cal), params.dpi_x, params.dpi_y);
         blit(&mut raster, &photo, &r, rotate);
+        if params.cut_marks {
+            draw_cut_marks(&mut raster, &r, params.dpi_x, params.dpi_y);
+        }
     }
 
     raster
@@ -280,7 +309,7 @@ pub fn render_mixed_sheet(
             continue;
         }
 
-        let rotate = p.orientation == Orientation::Landscape;
+        let rotate = (p.orientation == Orientation::Landscape) != params.turn_photo;
         let (sample_w, sample_h) = if rotate { (r.height, r.width) } else { (r.width, r.height) };
         let key = (sample_w, sample_h, rotate);
 
@@ -294,6 +323,9 @@ pub fn render_mixed_sheet(
             .expect("just inserted");
 
         blit(&mut raster, photo, &r, rotate);
+        if params.cut_marks {
+            draw_cut_marks(&mut raster, &r, params.dpi_x, params.dpi_y);
+        }
     }
 
     raster
@@ -325,6 +357,49 @@ fn sample_crop(source: &PhotoSource<'_>, width: u32, height: u32) -> ImageBuf {
             width,
             height,
         )
+    }
+}
+
+/// Draw faint corner ticks just outside a placement, for cutting by hand.
+///
+/// The ticks sit in the gutter rather than on the photograph, so trimming along
+/// them removes them with the waste. Blending towards white rather than writing
+/// a fixed grey keeps them faint on any paper.
+fn draw_cut_marks(raster: &mut Raster, at: &PixelRect, dpi_x: f64, dpi_y: f64) {
+    let len_x = mm_to_px_exact(CUT_MARK_LENGTH_MM, dpi_x).round().max(1.0) as u32;
+    let len_y = mm_to_px_exact(CUT_MARK_LENGTH_MM, dpi_y).round().max(1.0) as u32;
+
+    // Darken towards the guide grey, never lighten: the sheet is white, so
+    // blending towards white would leave nothing visible at all.
+    let mut mark = |x: u32, y: u32| {
+        if x >= raster.width_px || y >= raster.height_px {
+            return;
+        }
+        let o = raster.offset(x, y);
+        for c in 0..3 {
+            raster.pixels[o + c] = raster.pixels[o + c].min(CUT_MARK_GREY);
+        }
+    };
+
+    let left = at.x;
+    let right = at.x + at.width;
+    let top = at.y;
+    let bottom = at.y + at.height;
+
+    // Horizontal ticks, running outwards from the left and right edges.
+    for y in [top, bottom.saturating_sub(1)] {
+        for i in 0..len_x {
+            mark(left.saturating_sub(i + 1), y);
+            mark(right + i, y);
+        }
+    }
+
+    // Vertical ticks, running outwards from the top and bottom edges.
+    for x in [left, right.saturating_sub(1)] {
+        for i in 0..len_y {
+            mark(x, top.saturating_sub(i + 1));
+            mark(x, bottom + i);
+        }
     }
 }
 
@@ -557,6 +632,7 @@ mod tests {
             margin_mm: 2.0,
             gutter_mm: 2.0,
             alignment: crate::layout::Alignment::TopLeft,
+            lock_orientation: false,
         };
         let sheet = crate::layout::solve(&cfg).unwrap();
         assert!(sheet.placements.len() >= 4);
@@ -595,6 +671,7 @@ mod tests {
             margin_mm: 0.0,
             gutter_mm: 0.0,
             alignment: crate::layout::Alignment::TopLeft,
+            lock_orientation: false,
         };
         let sheet = crate::layout::solve(&cfg).unwrap();
 
@@ -629,6 +706,137 @@ mod tests {
             &source,
         );
         assert!(raster.pixels.iter().all(|&b| b == 0xFF));
+    }
+
+    #[test]
+    fn cut_marks_never_touch_the_photograph() {
+        // The one thing that must not happen: a guide printed into the picture
+        // cannot be trimmed off afterwards.
+        let px = quadrant_image();
+        let src = ImageRef::new(&px, 100, 100).unwrap();
+        let paper = SizeMm::new(60.0, 60.0);
+        let p = placement(10.0, 10.0, 20.0, 25.0);
+        let source = PhotoSource::new(src, 0.0, 0.0, 100.0, 100.0);
+
+        let plain =
+            render_sheet_with_photo(&sheet_with(p), paper, &RenderParams::new(300.0, 300.0), &source);
+
+        let mut marked_params = RenderParams::new(300.0, 300.0);
+        marked_params.cut_marks = true;
+        let marked = render_sheet_with_photo(&sheet_with(p), paper, &marked_params, &source);
+
+        assert_ne!(plain.pixels, marked.pixels, "cut marks drew nothing");
+
+        // Every pixel inside the placement must be identical either way.
+        let r = placement_to_pixels(&p, 300.0, 300.0);
+        for y in r.y..r.y + r.height {
+            for x in r.x..r.x + r.width {
+                let o = plain.offset(x, y);
+                assert_eq!(
+                    plain.pixels[o..o + 4],
+                    marked.pixels[o..o + 4],
+                    "cut mark bled into the photo at {x},{y}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cut_marks_are_faint_rather_than_black() {
+        // "Barely visible" was the requirement; a dark line would be worse than
+        // none, since it shows on the cut edge.
+        let px = quadrant_image();
+        let src = ImageRef::new(&px, 100, 100).unwrap();
+        let paper = SizeMm::new(60.0, 60.0);
+        let p = placement(10.0, 10.0, 20.0, 25.0);
+        let source = PhotoSource::new(src, 0.0, 0.0, 100.0, 100.0);
+
+        let mut params = RenderParams::new(300.0, 300.0);
+        params.cut_marks = true;
+        let marked = render_sheet_with_photo(&sheet_with(p), paper, &params, &source);
+
+        // Sample just left of the placement's top edge, where a tick runs.
+        let r = placement_to_pixels(&p, 300.0, 300.0);
+        let o = marked.offset(r.x - 2, r.y);
+        let v = marked.pixels[o];
+        assert!(v < 250, "mark is invisible: {v}");
+        assert!(v > 180, "mark is too dark to be called faint: {v}");
+    }
+
+    #[test]
+    fn cut_marks_are_off_by_default() {
+        let px = quadrant_image();
+        let src = ImageRef::new(&px, 100, 100).unwrap();
+        let paper = SizeMm::new(60.0, 60.0);
+        let p = placement(10.0, 10.0, 20.0, 25.0);
+        let source = PhotoSource::new(src, 0.0, 0.0, 100.0, 100.0);
+
+        let params = RenderParams::new(300.0, 300.0);
+        assert!(!params.cut_marks);
+        let out = render_sheet_with_photo(&sheet_with(p), paper, &params, &source);
+
+        // The margin stays pure white when marks are off.
+        let r = placement_to_pixels(&p, 300.0, 300.0);
+        let o = out.offset(r.x - 2, r.y);
+        assert_eq!(&out.pixels[o..o + 3], &[255, 255, 255]);
+    }
+
+    #[test]
+    fn turning_the_photo_leaves_the_frame_alone() {
+        // The distinction that took two attempts to get right: the frame's
+        // shape comes from the layout, the picture's orientation from this
+        // flag. Turning the photo must not resize the rectangle it sits in.
+        let px = quadrant_image();
+        let src = ImageRef::new(&px, 100, 100).unwrap();
+        let paper = SizeMm::new(60.0, 60.0);
+        let p = placement(5.0, 5.0, 25.0, 20.0);
+        let source = PhotoSource::new(src, 0.0, 0.0, 100.0, 100.0);
+
+        let upright =
+            render_sheet_with_photo(&sheet_with(p), paper, &RenderParams::new(300.0, 300.0), &source);
+
+        let mut turned_params = RenderParams::new(300.0, 300.0);
+        turned_params.turn_photo = true;
+        let turned = render_sheet_with_photo(&sheet_with(p), paper, &turned_params, &source);
+
+        assert_ne!(upright.pixels, turned.pixels, "turn_photo changed nothing");
+        assert_eq!(
+            (upright.width_px, upright.height_px),
+            (turned.width_px, turned.height_px),
+            "turning the photo must not change the sheet"
+        );
+
+        // Upright the placement's top-left is the crop's top-left (red);
+        // turned clockwise it becomes the crop's bottom-left (blue).
+        let r = placement_to_pixels(&p, 300.0, 300.0);
+        let up = &upright.pixels[upright.offset(r.x + 4, r.y + 4)..][..4];
+        assert!(up[2] > 200 && up[1] < 60, "upright corner is not red: {up:?}");
+        let tn = &turned.pixels[turned.offset(r.x + 4, r.y + 4)..][..4];
+        assert!(tn[0] > 200 && tn[2] < 60, "turned corner is not blue: {tn:?}");
+    }
+
+    #[test]
+    fn turning_a_photo_in_a_rotated_frame_puts_it_upright() {
+        // A landscape placement already turns the picture, so asking for a
+        // turn on top of that must cancel rather than turn twice.
+        let px = quadrant_image();
+        let src = ImageRef::new(&px, 100, 100).unwrap();
+        let paper = SizeMm::new(60.0, 60.0);
+        let landscape = Placement {
+            x_mm: 5.0,
+            y_mm: 5.0,
+            size: SizeMm::new(25.0, 20.0),
+            orientation: Orientation::Landscape,
+        };
+        let source = PhotoSource::new(src, 0.0, 0.0, 100.0, 100.0);
+
+        let mut params = RenderParams::new(300.0, 300.0);
+        params.turn_photo = true;
+        let out = render_sheet_with_photo(&sheet_with(landscape), paper, &params, &source);
+
+        let r = placement_to_pixels(&landscape, 300.0, 300.0);
+        let c = &out.pixels[out.offset(r.x + 4, r.y + 4)..][..4];
+        assert!(c[2] > 200 && c[1] < 60, "expected red (upright), got {c:?}");
     }
 
     #[test]

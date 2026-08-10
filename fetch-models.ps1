@@ -57,11 +57,7 @@ function Get-IfMissing {
     Write-Host "done     $Path" -ForegroundColor Green
 }
 
-Get-IfMissing `
-    -Path "models\birefnet_lite_fp16.onnx" `
-    -Url "https://huggingface.co/onnx-community/BiRefNet_lite-ONNX/resolve/main/onnx/model_fp16.onnx" `
-    -Sha256 "d39b897ceb16ae654c1731f3dba0cf9b368d9cae74b5a57459b455cc8bfec402" `
-    -Description "BiRefNet segmentation model (109 MB)"
+# Both models are committed to the repository, so only the runtime is fetched.
 
 # ONNX Runtime ships as a NuGet package; the DirectML build is the one that can
 # use the GPU, falling back to CPU where there isn't one.

@@ -49,6 +49,14 @@ pub struct LayoutConfig {
     pub margin_mm: f64,
     pub gutter_mm: f64,
     pub alignment: Alignment,
+    /// Keep the photo exactly as given instead of trying both orientations.
+    ///
+    /// The solver normally swaps width and height when that fits more copies,
+    /// which means asking for 45x35 and asking for 35x45 produce the same
+    /// sheet. Setting this makes the requested shape the one that prints, at
+    /// the cost of fitting fewer photos.
+    #[serde(default)]
+    pub lock_orientation: bool,
 }
 
 /// One photo positioned on the sheet. Origin is the top-left of the paper.
@@ -151,10 +159,17 @@ pub fn solve(cfg: &LayoutConfig) -> Result<Sheet, LayoutError> {
     }
 
     let portrait = build_grid(usable, cfg.photo, cfg.gutter_mm, Orientation::Portrait);
-    let landscape = build_grid(usable, cfg.photo.swapped(), cfg.gutter_mm, Orientation::Landscape);
 
-    // Prefer portrait on a tie so results stay deterministic and unsurprising.
-    let grid = if landscape.capacity() > portrait.capacity() { landscape } else { portrait };
+    let grid = if cfg.lock_orientation {
+        // The caller asked for this exact shape, so a denser alternative is not
+        // an improvement — it would print a different photo size.
+        portrait
+    } else {
+        let landscape =
+            build_grid(usable, cfg.photo.swapped(), cfg.gutter_mm, Orientation::Landscape);
+        // Prefer portrait on a tie so results stay deterministic and unsurprising.
+        if landscape.capacity() > portrait.capacity() { landscape } else { portrait }
+    };
 
     if grid.capacity() == 0 {
         return Err(LayoutError::PhotoTooLarge);
@@ -172,42 +187,119 @@ pub fn solve(cfg: &LayoutConfig) -> Result<Sheet, LayoutError> {
     })
 }
 
-/// Lay `n` photos out row-major within the grid.
+/// Lay `n` photos out in balanced rows within the grid.
+///
+/// Filling each row to the grid's width before starting the next leaves a
+/// ragged last row: six photos in a four-column grid come out 4 + 2, with a
+/// visible gap. Spreading the same six over the same number of rows gives
+/// 3 + 3, which reads as deliberate and cuts more predictably.
+///
+/// Rows are centred individually under [`Alignment::Center`], so an uneven
+/// split such as 3 + 2 still looks composed rather than left-heavy.
+///
+/// Under [`Alignment::Center`] the leftover space is also shared out evenly
+/// rather than pushed to the edges: with `k` photos across, the sheet is
+/// divided into `k + 1` equal gaps, so the distance between neighbours and the
+/// distance to the paper edge are the same. `gutter_mm` acts as a floor, never
+/// a fixed value, so photos cannot end up closer together than asked.
+///
+/// [`Alignment::TopLeft`] keeps the tight packing it exists for: it is there to
+/// leave reusable paper, which spreading would defeat.
 fn place(cfg: &LayoutConfig, grid: &Grid, usable: SizeMm, n: u32) -> Vec<Placement> {
-    if n == 0 {
+    if n == 0 || grid.cols == 0 {
         return Vec::new();
     }
 
-    // Only the rows and columns actually occupied should be centred, otherwise
-    // a half-empty sheet would centre around empty space.
-    let used_cols = n.min(grid.cols);
-    let used_rows = n.div_ceil(grid.cols);
+    // The number of rows the naive layout would need; keeping it is what makes
+    // this a rebalance rather than a change of capacity.
+    let rows = n.div_ceil(grid.cols).max(1);
 
-    let block_width =
-        used_cols as f64 * grid.photo.width + (used_cols as f64 - 1.0) * cfg.gutter_mm;
-    let block_height =
-        used_rows as f64 * grid.photo.height + (used_rows as f64 - 1.0) * cfg.gutter_mm;
+    // Spread as evenly as the count allows: the first `remainder` rows take one
+    // extra photo, the rest take the base amount.
+    let base = n / rows;
+    let remainder = n % rows;
 
-    let (origin_x, origin_y) = match cfg.alignment {
-        Alignment::TopLeft => (cfg.margin_mm, cfg.margin_mm),
-        Alignment::Center => (
-            cfg.margin_mm + (usable.width - block_width) / 2.0,
-            cfg.margin_mm + (usable.height - block_height) / 2.0,
-        ),
+    /// Gap between `count` items and before the first, sharing the slack out
+    /// equally over the whole sheet.
+    ///
+    /// Returns `None` when an equal share would be tighter than `min_gap`,
+    /// which means there is nothing to spread and the caller should fall back
+    /// to centring a tightly packed block inside the margins. Spreading anyway
+    /// would push the block past the paper edge, since the grid was sized
+    /// against the usable area but the gaps are measured against the full
+    /// sheet.
+    fn even_gap(paper: f64, item: f64, count: u32, min_gap: f64) -> Option<f64> {
+        if count == 0 {
+            return None;
+        }
+        let slack = paper - count as f64 * item;
+        // count + 1 gaps: one before each item and one after the last.
+        let gap = slack / (count as f64 + 1.0);
+        if gap.is_finite() && gap >= min_gap { Some(gap) } else { None }
+    }
+
+    let spread = matches!(cfg.alignment, Alignment::Center);
+
+    // Spread over the whole sheet, not the usable area: the edge gap is one of
+    // the gaps being equalised, so subtracting the margin first would count it
+    // twice and leave the outer gaps wider than the inner ones. The margin
+    // stays a floor, and `even_gap` declines when it cannot be honoured.
+    let spread_y = spread
+        .then(|| {
+            even_gap(cfg.paper.height, grid.photo.height, rows, cfg.gutter_mm.max(cfg.margin_mm))
+        })
+        .flatten();
+
+    let gap_y = spread_y.unwrap_or(cfg.gutter_mm);
+    let block_height = rows as f64 * grid.photo.height + (rows as f64 - 1.0) * gap_y;
+    let origin_y = if spread_y.is_some() {
+        (cfg.paper.height - block_height) / 2.0
+    } else if spread {
+        // Nothing to spread: centre the packed block inside the margins.
+        cfg.margin_mm + (usable.height - block_height) / 2.0
+    } else {
+        cfg.margin_mm
     };
 
-    (0..n)
-        .map(|i| {
-            let col = i % grid.cols;
-            let row = i / grid.cols;
-            Placement {
-                x_mm: origin_x + col as f64 * (grid.photo.width + cfg.gutter_mm),
-                y_mm: origin_y + row as f64 * (grid.photo.height + cfg.gutter_mm),
+    let mut placements = Vec::with_capacity(n as usize);
+    for row in 0..rows {
+        let in_row = base + if row < remainder { 1 } else { 0 };
+        if in_row == 0 {
+            continue;
+        }
+
+        let spread_x = spread
+            .then(|| {
+                even_gap(
+                    cfg.paper.width,
+                    grid.photo.width,
+                    in_row,
+                    cfg.gutter_mm.max(cfg.margin_mm),
+                )
+            })
+            .flatten();
+
+        let gap_x = spread_x.unwrap_or(cfg.gutter_mm);
+        let row_width = in_row as f64 * grid.photo.width + (in_row as f64 - 1.0) * gap_x;
+        let origin_x = if spread_x.is_some() {
+            (cfg.paper.width - row_width) / 2.0
+        } else if spread {
+            cfg.margin_mm + (usable.width - row_width) / 2.0
+        } else {
+            cfg.margin_mm
+        };
+
+        for col in 0..in_row {
+            placements.push(Placement {
+                x_mm: origin_x + col as f64 * (grid.photo.width + gap_x),
+                y_mm: origin_y + row as f64 * (grid.photo.height + gap_y),
                 size: grid.photo,
                 orientation: grid.orientation,
-            }
-        })
-        .collect()
+            });
+        }
+    }
+
+    placements
 }
 
 /// One photo size and how many copies of it are wanted.
@@ -267,6 +359,20 @@ pub fn solve_mixed(
     margin_mm: f64,
     gutter_mm: f64,
 ) -> Result<MixedSheet, LayoutError> {
+    solve_mixed_with(paper, groups, margin_mm, gutter_mm, false)
+}
+
+/// As [`solve_mixed`], but able to keep every group in the orientation given.
+///
+/// Locking costs capacity; it exists so a deliberately turned frame is not
+/// rotated back to whichever way round packs denser.
+pub fn solve_mixed_with(
+    paper: SizeMm,
+    groups: &[PhotoGroup],
+    margin_mm: f64,
+    gutter_mm: f64,
+    lock_orientation: bool,
+) -> Result<MixedSheet, LayoutError> {
     if !paper.width.is_finite() || !paper.height.is_finite() || paper.width <= 0.0 || paper.height <= 0.0
     {
         return Err(LayoutError::InvalidDimensions);
@@ -304,7 +410,11 @@ pub fn solve_mixed(
     let mut shelf_height = 0.0f64;
 
     for &gi in &order {
-        let (size, orientation) = better_orientation(usable, groups[gi].size, gutter_mm);
+        let (size, orientation) = if lock_orientation {
+            (groups[gi].size, Orientation::Portrait)
+        } else {
+            better_orientation(usable, groups[gi].size, gutter_mm)
+        };
         while remaining[gi] > 0 {
             // Does it fit in the current shelf?
             let needs_gutter = cursor_x > margin_mm;
@@ -370,6 +480,7 @@ mod tests {
             margin_mm: 0.0,
             gutter_mm: 0.0,
             alignment: Alignment::Center,
+            lock_orientation: false,
         }
     }
 
@@ -457,8 +568,12 @@ mod tests {
         let sheet = solve(&c).unwrap();
         // 2*35+5=75 fits across; 3*45+10=145 fits down. Still 6.
         assert_eq!(sheet.capacity_per_sheet, 6);
+
+        // The gutter is a floor, not a fixed value: a centred sheet shares the
+        // leftover space out evenly, so the actual gap is at least the gutter
+        // and usually more.
         let gap = sheet.placements[1].x_mm - (sheet.placements[0].x_mm + 35.0);
-        assert!((gap - 5.0).abs() < 1e-9, "gutter not applied: {gap}");
+        assert!(gap >= 5.0 - 1e-9, "gap {gap} is tighter than the gutter");
     }
 
     fn group(w: f64, h: f64, count: u32) -> PhotoGroup {
@@ -530,6 +645,51 @@ mod tests {
         }
         assert_eq!(sheet.placements.iter().filter(|g| g.group == 0).count(), 2);
         assert_eq!(sheet.placements.iter().filter(|g| g.group == 1).count(), 3);
+    }
+
+    /// Swapping the requested size alone is NOT enough to turn the frame: the
+    /// solver tries both orientations and picks the denser one, so 35x45 and
+    /// 45x35 both come out as 45x35 on 10x15 paper. This documents that, and
+    /// is why `lock_orientation` exists.
+    #[test]
+    fn free_orientation_ignores_which_way_round_the_request_was() {
+        let upright = solve(&cfg((100.0, 150.0), (35.0, 45.0), 1)).unwrap();
+        let turned = solve(&cfg((100.0, 150.0), (45.0, 35.0), 1)).unwrap();
+        assert_eq!(
+            upright.placements[0].size, turned.placements[0].size,
+            "the solver is supposed to normalise orientation when free to"
+        );
+    }
+
+    /// With the orientation locked, the requested shape is what prints, even
+    /// though the other way round would fit more copies.
+    #[test]
+    fn locked_orientation_prints_the_requested_shape() {
+        let mut c = cfg((100.0, 150.0), (45.0, 35.0), 1);
+        c.lock_orientation = true;
+        let sheet = solve(&c).unwrap();
+
+        let size = sheet.placements[0].size;
+        assert_eq!(size.width, 45.0, "locked frame lost its width");
+        assert_eq!(size.height, 35.0, "locked frame lost its height");
+        assert_eq!(sheet.orientation, Orientation::Portrait, "locked layout must not rotate");
+
+        // And the same size unlocked would have been turned instead.
+        let free = solve(&cfg((100.0, 150.0), (35.0, 45.0), 1)).unwrap();
+        assert_eq!(free.placements[0].size, SizeMm::new(45.0, 35.0));
+    }
+
+    #[test]
+    fn locking_can_cost_capacity() {
+        // The trade the setting makes, stated explicitly: 35x45 upright fits 6
+        // where the solver would otherwise turn it and fit 8.
+        let mut c = cfg((100.0, 150.0), (35.0, 45.0), 20);
+        c.lock_orientation = true;
+        let locked = solve(&c).unwrap();
+        let free = solve(&cfg((100.0, 150.0), (35.0, 45.0), 20)).unwrap();
+
+        assert_eq!(locked.capacity_per_sheet, 6);
+        assert_eq!(free.capacity_per_sheet, 8);
     }
 
     #[test]
@@ -625,6 +785,190 @@ mod tests {
         let b = sheet.placements[1].placement;
         let gap = b.x_mm - (a.x_mm + a.size.width);
         assert!((gap - 5.0).abs() < 1e-9, "gutter was {gap}, expected 5");
+    }
+
+    /// Count the photos on each row of a solved sheet, top to bottom.
+    fn row_counts(sheet: &Sheet) -> Vec<usize> {
+        let mut rows: Vec<(f64, usize)> = Vec::new();
+        for p in &sheet.placements {
+            match rows.iter_mut().find(|(y, _)| (*y - p.y_mm).abs() < 1e-6) {
+                Some((_, n)) => *n += 1,
+                None => rows.push((p.y_mm, 1)),
+            }
+        }
+        rows.sort_by(|a, b| a.0.total_cmp(&b.0));
+        rows.into_iter().map(|(_, n)| n).collect()
+    }
+
+    /// The Citizen CY-02 case: its paper with the app's default margins, which
+    /// is the layout the gap was reported on.
+    fn citizen(count: u32) -> LayoutConfig {
+        let mut c = cfg((156.1, 105.0), (35.0, 45.0), count);
+        c.margin_mm = 3.0;
+        c.gutter_mm = 2.0;
+        c
+    }
+
+    #[test]
+    fn a_partial_sheet_balances_its_rows() {
+        // The reported problem: six photos in a four-column grid came out 4 + 2
+        // with a conspicuous gap. The same six should read as 3 + 3.
+        let sheet = solve(&citizen(6)).unwrap();
+        assert_eq!(sheet.capacity_per_sheet, 8, "expected a 4x2 grid on this paper");
+        assert_eq!(row_counts(&sheet), vec![3, 3]);
+    }
+
+    #[test]
+    fn an_odd_count_splits_as_evenly_as_it_can() {
+        // Five over two rows cannot be equal; 3 + 2 is the closest, and the
+        // fuller row must come first so the gap is at the bottom.
+        let sheet = solve(&citizen(5)).unwrap();
+        assert_eq!(row_counts(&sheet), vec![3, 2]);
+    }
+
+    #[test]
+    fn a_full_sheet_is_unchanged_by_balancing() {
+        // Rebalancing must not disturb the common case of a full sheet.
+        let sheet = solve(&citizen(8)).unwrap();
+        assert_eq!(row_counts(&sheet), vec![4, 4]);
+    }
+
+    #[test]
+    fn balanced_rows_stay_inside_the_margins() {
+        // Centring each row separately must not push any of them off the sheet.
+        let c = citizen(5);
+        let sheet = solve(&c).unwrap();
+
+        for p in &sheet.placements {
+            assert!(p.x_mm >= c.margin_mm - 1e-9, "left escaped: {}", p.x_mm);
+            assert!(p.y_mm >= c.margin_mm - 1e-9, "top escaped: {}", p.y_mm);
+            assert!(
+                p.x_mm + p.size.width <= c.paper.width - c.margin_mm + 1e-9,
+                "right escaped: {}",
+                p.x_mm + p.size.width
+            );
+            assert!(
+                p.y_mm + p.size.height <= c.paper.height - c.margin_mm + 1e-9,
+                "bottom escaped: {}",
+                p.y_mm + p.size.height
+            );
+        }
+    }
+
+    #[test]
+    fn balancing_never_loses_or_invents_a_photo() {
+        // The rebalance rewrites the loop that emits placements, so the count
+        // it produces is worth pinning across a range of inputs.
+        for n in 1..=8u32 {
+            let sheet = solve(&citizen(n)).unwrap();
+            assert_eq!(sheet.placements.len(), n as usize, "wrong count for {n}");
+            assert_eq!(row_counts(&sheet).iter().sum::<usize>(), n as usize);
+        }
+    }
+
+    #[test]
+    fn spacing_is_even_across_a_row_including_the_edges() {
+        // The request: every photo the same distance from its neighbours and
+        // from the paper edge, rather than a tight block with the slack pushed
+        // to the sides.
+        let sheet = solve(&citizen(6)).unwrap();
+        let row: Vec<Placement> = {
+            let y = sheet.placements[0].y_mm;
+            let mut r: Vec<Placement> = sheet
+                .placements
+                .iter()
+                .copied()
+                .filter(|p| (p.y_mm - y).abs() < 1e-6)
+                .collect();
+            r.sort_by(|a, b| a.x_mm.total_cmp(&b.x_mm));
+            r
+        };
+        assert!(row.len() >= 2, "need a multi-photo row to measure gaps");
+
+        let paper_w = 156.1;
+        let mut gaps = vec![row[0].x_mm];
+        for pair in row.windows(2) {
+            gaps.push(pair[1].x_mm - (pair[0].x_mm + pair[0].size.width));
+        }
+        let last = row.last().unwrap();
+        gaps.push(paper_w - (last.x_mm + last.size.width));
+
+        let first = gaps[0];
+        for (i, g) in gaps.iter().enumerate() {
+            assert!(
+                (g - first).abs() < 1e-6,
+                "gap {i} is {g}, expected {first}; gaps: {gaps:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn spacing_is_even_down_the_sheet_including_the_edges() {
+        let sheet = solve(&citizen(6)).unwrap();
+        let mut ys: Vec<f64> = Vec::new();
+        for p in &sheet.placements {
+            if !ys.iter().any(|y| (y - p.y_mm).abs() < 1e-6) {
+                ys.push(p.y_mm);
+            }
+        }
+        ys.sort_by(|a, b| a.total_cmp(b));
+        assert!(ys.len() >= 2, "need at least two rows");
+
+        let paper_h = 105.0;
+        let photo_h = sheet.placements[0].size.height;
+        let mut gaps = vec![ys[0]];
+        for pair in ys.windows(2) {
+            gaps.push(pair[1] - (pair[0] + photo_h));
+        }
+        gaps.push(paper_h - (ys.last().unwrap() + photo_h));
+
+        let first = gaps[0];
+        for (i, g) in gaps.iter().enumerate() {
+            assert!((g - first).abs() < 1e-6, "row gap {i} is {g}, expected {first}");
+        }
+    }
+
+    #[test]
+    fn even_spacing_never_goes_below_the_requested_gutter() {
+        // On a full sheet there is no slack to share, so the gutter must hold
+        // rather than being computed down to something tighter.
+        let c = citizen(8);
+        let sheet = solve(&c).unwrap();
+        let mut row: Vec<Placement> = sheet
+            .placements
+            .iter()
+            .copied()
+            .filter(|p| (p.y_mm - sheet.placements[0].y_mm).abs() < 1e-6)
+            .collect();
+        row.sort_by(|a, b| a.x_mm.total_cmp(&b.x_mm));
+
+        for pair in row.windows(2) {
+            let gap = pair[1].x_mm - (pair[0].x_mm + pair[0].size.width);
+            assert!(gap >= c.gutter_mm - 1e-9, "gap {gap} is tighter than the gutter");
+        }
+    }
+
+    #[test]
+    fn topleft_alignment_still_packs_tightly() {
+        // Spreading is for centred sheets. TopLeft exists to leave reusable
+        // paper, which spreading would defeat.
+        let mut c = citizen(4);
+        c.alignment = Alignment::TopLeft;
+        let sheet = solve(&c).unwrap();
+
+        let mut row: Vec<Placement> = sheet
+            .placements
+            .iter()
+            .copied()
+            .filter(|p| (p.y_mm - sheet.placements[0].y_mm).abs() < 1e-6)
+            .collect();
+        row.sort_by(|a, b| a.x_mm.total_cmp(&b.x_mm));
+
+        assert!((row[0].x_mm - c.margin_mm).abs() < 1e-9, "did not start at the margin");
+        for pair in row.windows(2) {
+            let gap = pair[1].x_mm - (pair[0].x_mm + pair[0].size.width);
+            assert!((gap - c.gutter_mm).abs() < 1e-9, "gap {gap} is not the gutter");
+        }
     }
 
     #[test]

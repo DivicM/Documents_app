@@ -28,12 +28,17 @@ const hr: Record<string, string> = {
   "layout.sheets_needed": "Potrebno listova: {sheets}",
   "layout.align_top_left": "Poravnaj u kut",
   "layout.cut_marks": "Linije za rezanje",
+  "layout.cut_marks_hint":
+    "Blijede oznake u kutovima svake slike, ispisuju se na papir. Nalaze se izvan slike pa ih rezanjem uklonite.",
   "layout.rotated": "Slike su zakrenute za 90° radi boljeg iskorištenja papira",
 
   "printer.label": "Printer",
   "printer.none": "Nema instaliranih printera",
   "printer.dpi": "Rezolucija: {dpiX} × {dpiY} DPI",
   "printer.margins": "Hardverski rub: {left} / {top} / {right} / {bottom} mm",
+  "printer.paper_from_driver": "Papir u printeru: {width} × {height} mm",
+  "printer.paper_overridden":
+    "Printer je namješten na {width} × {height} mm, pa se koristi ta veličina umjesto odabrane. Veličinu papira mijenjajte u postavkama printera u Windowsima.",
   "printer.refresh": "Osvježi",
 
   "calibration.title": "Kalibracija",
@@ -230,15 +235,61 @@ const hr: Record<string, string> = {
   "mixed.all_placed": "Sve stane na jedan list ({count} kom.).",
   "mixed.empty": "Dodajte barem jedan format.",
 
-  "autoprint.title": "Automatski ispis",
-  "autoprint.enable": "Ispiši čim fotografija zadovolji propis",
-  "autoprint.explain":
-    "Kad je uključeno, ispis kreće sam nakon što sve provjere prođu. Ne ispisuje se dok ima grešaka.",
-  "autoprint.blocked": "Automatski ispis čeka: fotografija ne zadovoljava propis.",
-  "autoprint.waiting": "Automatski ispis čeka provjeru.",
-  "autoprint.needs_spec": "Za automatski ispis odaberite dokument (ne „Prilagođeno”).",
-  "autoprint.done": "Automatski ispisano (job {jobId}).",
-  "autoprint.armed": "Automatski ispis je spreman — ispisat će se čim sve prođe.",
+  "settings.title": "Postavke",
+  "settings.open": "Postavke",
+  "settings.close": "Zatvori",
+  "settings.saved": "Postavke su spremljene.",
+  "settings.explain":
+    "Namjesti se jednom i pamti se. Vrijedi za sve buduće ispise dok se ne promijeni.",
+  "settings.tab_layout": "Raspored",
+  "settings.tab_presets": "Predlošci",
+  "settings.tab_calibration": "Kalibracija",
+  "settings.tab_mixed": "Miješani list",
+  "settings.save": "Spremi postavke",
+  "settings.quarter_turn": "Vodoravni format (npr. 45 × 35 umjesto 35 × 45)",
+  "settings.quarter_turn_hint":
+    "Okreće oblik okvira na listu. Mijenja koliko slika stane na papir.",
+  "settings.turn_photo": "Okreni sliku za 90° unutar okvira",
+  "settings.turn_photo_hint":
+    "Okreće sadržaj, ne okvir. Uz uključen vodoravni format lice će ležati na boku.",
+
+  "wizard.step1": "Odabir slike",
+  "wizard.step2": "Format",
+  "wizard.step3": "Obrada",
+  "wizard.step4": "Ispis",
+  "wizard.next": "Dalje",
+  "wizard.back": "Natrag",
+  "wizard.start_over": "Nova fotografija",
+
+  "drop.title": "Povucite fotografiju ovdje",
+  "drop.or": "ili",
+  "drop.browse": "Odaberi datoteku",
+  "drop.hint": "JPEG ili PNG. Slika ostaje na vašem računalu.",
+  "drop.active": "Pustite za učitavanje",
+  "drop.rejected": "Nije slika. Odaberite JPEG ili PNG.",
+  "drop.loaded": "Učitano: {name}",
+  "drop.change": "Promijeni sliku",
+
+  "picker.title": "Za koji dokument?",
+  "picker.hint": "Format određuje dimenzije i propisanu visinu glave.",
+  "picker.size": "{width} × {height} mm",
+  "picker.head": "Visina glave {mm} mm",
+  "picker.group_hr": "Hrvatska",
+  "picker.group_intl": "Međunarodno",
+  "picker.group_other": "Ostalo",
+  "picker.unverified": "Nije službeno provjereno",
+  "picker.unverified_hint":
+    "Ove dimenzije su široko korištene, ali za njih nemamo službeni izvor. Provjerite kod nadležnog tijela prije predaje.",
+  "picker.verified_hint": "Dimenzije su iz propisa.",
+
+  "editor.group_crop": "Kadriranje",
+  "editor.group_tone": "Svjetlina i boja",
+  "editor.group_background": "Pozadina",
+  "editor.group_checks": "Provjera",
+  "editor.locked_ratio": "Format je zaključan na {width} × {height} mm.",
+
+  "print.done": "Ispisano. Možete započeti novu fotografiju.",
+  "print.review": "Provjerite pregled prije ispisa.",
 
   "disclaimer":
     "Provjeravaju se samo mjerljivi kriteriji. Službenik može odbiti fotografiju i iz razloga koje program ne mjeri.",

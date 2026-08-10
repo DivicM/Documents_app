@@ -21,13 +21,17 @@ fn default_threads() -> usize {
 /// usable on this machine.
 #[cfg(windows)]
 fn try_directml(path: &std::path::Path) -> Option<Session> {
+    use ort::ep::directml::PerformancePreference;
     use ort::ep::DirectML;
 
     let builder = Session::builder().ok()?;
-    // Registration succeeds even when no suitable device exists, so the real
-    // check is whether the model commits.
+    // HighPerformance rather than the default: a laptop typically reports its
+    // integrated GPU first, and the default preference picks that one. On a
+    // machine with a single GPU this changes nothing.
     let mut builder = builder
-        .with_execution_providers([DirectML::default().build()])
+        .with_execution_providers([DirectML::default()
+            .with_performance_preference(PerformancePreference::HighPerformance)
+            .build()])
         .ok()?;
     builder.commit_from_file(path).ok()
 }
@@ -37,10 +41,29 @@ fn try_directml(_path: &std::path::Path) -> Option<Session> {
     None
 }
 
-/// Fixed input size of this export. Read from the model, not chosen.
-pub const INPUT_SIZE: u32 = 1024;
+/// Resolution the segmenter runs at.
+///
+/// U2NETP is fully convolutional and will accept other sizes, but 320 is what
+/// it was trained on and the only size where it is reliable: measured at 640 on
+/// a test portrait, the head stayed solid while the torso broke up into a
+/// half-transparent, patchy mask. Higher input resolution is not a route to a
+/// finer mask here.
+///
+/// The magnification to print size is handled by sampling the mask bilinearly
+/// rather than by enlarging the model input.
+///
+/// Also well under the two-second Windows TDR limit; exceeding it is what made
+/// the earlier BiRefNet export (1024x1024, ~7s) reset the GPU driver mid-run.
+pub const INPUT_SIZE: u32 = 320;
 
-/// ImageNet normalisation, which BiRefNet was trained with.
+/// Input tensor name. U2NETP was exported from PyTorch without naming it.
+const INPUT_NAME: &str = "input.1";
+
+/// The fused prediction. U2-Net is deep-supervised and emits seven maps; the
+/// first is the fusion of the rest and the only one worth reading.
+const OUTPUT_NAME: &str = "1959";
+
+/// ImageNet normalisation, as U-2-Net was trained with.
 const MEAN: [f32; 3] = [0.485, 0.456, 0.406];
 const STD: [f32; 3] = [0.229, 0.224, 0.225];
 
@@ -106,6 +129,22 @@ impl BackgroundSegmenter {
         Ok(Self { session, backend: Backend::Cpu })
     }
 
+    /// Load on the CPU provider only, skipping the GPU attempt.
+    ///
+    /// Exists so the two backends can be timed against each other on the same
+    /// machine; the application itself always prefers the GPU.
+    #[doc(hidden)]
+    pub fn cpu_only(path: &std::path::Path) -> Result<Self, SegmentError> {
+        let builder = Session::builder().map_err(|e| SegmentError::ModelLoad(e.to_string()))?;
+        let mut builder = builder
+            .with_intra_threads(default_threads())
+            .map_err(|e| SegmentError::ModelLoad(e.to_string()))?;
+        let session = builder
+            .commit_from_file(path)
+            .map_err(|e| SegmentError::ModelLoad(e.to_string()))?;
+        Ok(Self { session, backend: Backend::Cpu })
+    }
+
     pub fn backend(&self) -> Backend {
         self.backend
     }
@@ -126,12 +165,14 @@ impl BackgroundSegmenter {
 
         let outputs = self
             .session
-            .run(ort::inputs!["input_image" => tensor])
+            .run(ort::inputs![INPUT_NAME => tensor])
             .map_err(|e| SegmentError::Inference(e.to_string()))?;
 
         let (_, data) = outputs
-            .get("output_image")
-            .ok_or_else(|| SegmentError::UnexpectedOutput("missing output_image".into()))?
+            .get(OUTPUT_NAME)
+            .ok_or_else(|| {
+                SegmentError::UnexpectedOutput(format!("missing output {OUTPUT_NAME}"))
+            })?
             .try_extract_tensor::<f32>()
             .map_err(|e| SegmentError::UnexpectedOutput(e.to_string()))?;
 
@@ -142,19 +183,47 @@ impl BackgroundSegmenter {
                 data.len()
             )));
         }
+        let data = &data[..expected];
 
-        // The model emits logits; a sigmoid turns them into coverage.
-        let bytes: Vec<u8> = data[..expected]
-            .iter()
-            .map(|&v| {
-                let p = 1.0 / (1.0 + (-v).exp());
-                (p * 255.0).round().clamp(0.0, 255.0) as u8
-            })
-            .collect();
+        // U-2-Net applies its own sigmoid, so these are already probabilities,
+        // but they rarely span the full range. Rescaling to min-max is what the
+        // reference implementation does; without it a mask can come out uniformly
+        // grey and the threshold slider has nothing to bite on.
+        let bytes = normalise_to_bytes(data);
 
         AlphaMask::new(INPUT_SIZE, INPUT_SIZE, bytes)
             .ok_or_else(|| SegmentError::UnexpectedOutput("mask size mismatch".into()))
     }
+}
+
+/// Rescale a prediction map to the full 0-255 byte range.
+///
+/// U-2-Net applies its own sigmoid, so these are already probabilities, but they
+/// rarely span the whole range. Min-max rescaling is what the reference
+/// implementation does; without it a mask comes out uniformly grey and the
+/// threshold slider has nothing to bite on.
+fn normalise_to_bytes(data: &[f32]) -> Vec<u8> {
+    let (min, max) = data
+        .iter()
+        .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), &v| (lo.min(v), hi.max(v)));
+    let span = max - min;
+
+    if span > 1e-6 {
+        data.iter()
+            .map(|&v| (((v - min) / span) * 255.0).round().clamp(0.0, 255.0) as u8)
+            .collect()
+    } else {
+        // A flat prediction carries no information. Mid-grey is honest about
+        // that; stretching it would amplify noise into a convincing fake mask.
+        vec![128; data.len()]
+    }
+}
+
+/// Preprocessing alone, exposed so the timing example can separate it from
+/// inference. Not part of the normal path.
+#[doc(hidden)]
+pub fn preprocess_for_bench(image: &RgbImage) -> Vec<f32> {
+    preprocess(image)
 }
 
 /// Resize to the model input and normalise, laid out as CHW float.
@@ -208,6 +277,30 @@ mod tests {
             let v = buf[c * n * n + centre];
             assert!(v.abs() < 0.15, "channel {c} normalised to {v}");
         }
+    }
+
+    #[test]
+    fn normalisation_stretches_a_narrow_range_to_full_scale() {
+        // U-2-Net output often sits in a narrow band. Without stretching, the
+        // mask is uniformly grey and the threshold slider does nothing.
+        let out = normalise_to_bytes(&[0.40, 0.45, 0.50, 0.55, 0.60]);
+        assert_eq!(out.first(), Some(&0));
+        assert_eq!(out.last(), Some(&255));
+    }
+
+    #[test]
+    fn a_flat_prediction_becomes_mid_grey_not_noise() {
+        // Dividing by a zero span would produce NaN or amplify float dust into
+        // a mask that looks meaningful but is not.
+        let out = normalise_to_bytes(&[0.5; 16]);
+        assert!(out.iter().all(|&v| v == 128), "flat input produced {out:?}");
+    }
+
+    #[test]
+    fn normalisation_preserves_ordering() {
+        // Whatever the scaling, a more confident pixel must stay more confident.
+        let out = normalise_to_bytes(&[0.1, 0.9, 0.3, 0.7]);
+        assert!(out[0] < out[2] && out[2] < out[3] && out[3] < out[1], "{out:?}");
     }
 
     #[test]

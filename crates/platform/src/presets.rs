@@ -130,7 +130,72 @@ impl std::fmt::Display for PresetError {
 
 impl std::error::Error for PresetError {}
 
-/// The whole config file: calibrations and presets side by side.
+/// Sheet settings that persist across sessions.
+///
+/// Set once in the settings window and then left alone: paper, margins and how
+/// many copies go on a sheet do not change from photo to photo.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SheetSettings {
+    #[serde(default = "default_paper")]
+    pub paper_id: String,
+    #[serde(default = "default_count_setting")]
+    pub count: u32,
+    #[serde(default = "default_margin")]
+    pub margin_mm: f64,
+    #[serde(default = "default_gutter")]
+    pub gutter_mm: f64,
+    #[serde(default)]
+    pub align_top_left: bool,
+    #[serde(default = "default_true")]
+    pub cut_marks: bool,
+    /// Turn each photo frame on its side: 35x45 becomes 45x35.
+    #[serde(default = "default_true")]
+    pub quarter_turn: bool,
+    /// Turn the picture inside its frame. Independent of the frame's shape.
+    #[serde(default = "default_true")]
+    pub turn_photo: bool,
+    /// Printer chosen last time, restored on the next run.
+    #[serde(default)]
+    pub printer: String,
+}
+
+fn default_paper() -> String {
+    "10x15".to_string()
+}
+
+fn default_count_setting() -> u32 {
+    6
+}
+
+fn default_margin() -> f64 {
+    3.0
+}
+
+fn default_gutter() -> f64 {
+    2.0
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for SheetSettings {
+    fn default() -> Self {
+        Self {
+            paper_id: default_paper(),
+            count: default_count_setting(),
+            margin_mm: default_margin(),
+            gutter_mm: default_gutter(),
+            align_top_left: false,
+            cut_marks: true,
+            quarter_turn: true,
+            turn_photo: true,
+            printer: String::new(),
+        }
+    }
+}
+
+/// The whole config file: calibrations, presets and sheet settings side by side.
 ///
 /// Both live in one file because they are both per-machine settings, and one
 /// atomic write is easier to reason about than two. Loading and saving goes
@@ -144,6 +209,8 @@ pub struct Config {
     pub entries: BTreeMap<String, crate::calibration::Calibration>,
     #[serde(default)]
     pub presets: BTreeMap<String, Preset>,
+    #[serde(default)]
+    pub sheet: SheetSettings,
 }
 
 impl Config {
@@ -235,6 +302,36 @@ mod tests {
         let back: Config = toml::from_str(&toml).unwrap();
         assert_eq!(back.entries.len(), 1, "calibration was lost");
         assert_eq!(back.presets.len(), 1, "preset was lost");
+    }
+
+    #[test]
+    fn sheet_settings_round_trip_and_default_sensibly() {
+        let mut cfg = Config::default();
+        assert_eq!(cfg.sheet.paper_id, "10x15", "unset paper should default");
+        assert!(cfg.sheet.quarter_turn, "photos are laid sideways by default");
+
+        cfg.sheet.count = 8;
+        cfg.sheet.printer = "Brother HL-L2402D".into();
+        let back: Config = toml::from_str(&toml::to_string_pretty(&cfg).unwrap()).unwrap();
+        assert_eq!(back.sheet.count, 8);
+        assert_eq!(back.sheet.printer, "Brother HL-L2402D");
+    }
+
+    #[test]
+    fn a_config_written_before_sheet_settings_existed_still_loads() {
+        // Same guarantee as for presets: an older file must not fail to parse
+        // and take the calibrations down with it.
+        let old = r#"
+[entries."P|210000x297000|false"]
+scale_x = 1.0
+scale_y = 1.0
+offset_x_mm = 0.0
+offset_y_mm = 0.0
+calibrated_at = "2026-08-07T19:00:00Z"
+"#;
+        let cfg: Config = toml::from_str(old).unwrap();
+        assert_eq!(cfg.entries.len(), 1);
+        assert_eq!(cfg.sheet, SheetSettings::default());
     }
 
     #[test]

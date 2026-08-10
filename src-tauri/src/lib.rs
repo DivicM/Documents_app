@@ -20,6 +20,8 @@ pub fn run() {
             commands::print_sheet,
             commands::solve_mixed_layout,
             commands::print_mixed_sheet,
+            presets::get_sheet_settings,
+            presets::save_sheet_settings,
             presets::list_presets,
             presets::save_preset,
             presets::load_preset,

@@ -31,13 +31,23 @@ fn main() {
         println!("  driver: {}", p.driver);
 
         match backend.device_dpi(&p.name) {
-            Ok(dpi) => {
-                println!("  device dpi: {}x{}", dpi.x, dpi.y);
-                let px_w = (100.0 / 25.4 * dpi.x as f64).round();
-                let px_h = (150.0 / 25.4 * dpi.y as f64).round();
-                println!("  10x15cm sheet would be {px_w}x{px_h} px at this dpi");
-            }
+            Ok(dpi) => println!("  device dpi: {}x{}", dpi.x, dpi.y),
             Err(e) => println!("  device dpi: unavailable ({e})"),
+        }
+
+        // The paper the driver is set to, which is what the layout must match.
+        // Assuming 10x15 and being wrong is how photos end up off the sheet.
+        match backend.device_paper(&p.name) {
+            Ok(dp) => {
+                println!(
+                    "  CONFIGURED PAPER: {:.1} x {:.1} mm (printable {:.1} x {:.1} mm)",
+                    dp.physical_width_mm,
+                    dp.physical_height_mm,
+                    dp.printable_width_mm,
+                    dp.printable_height_mm
+                );
+            }
+            Err(e) => println!("  configured paper: unavailable ({e})"),
         }
 
         match backend.hardware_margins_mm(&p.name, paper) {

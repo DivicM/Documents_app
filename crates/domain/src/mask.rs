@@ -33,6 +33,38 @@ impl AlphaMask {
         }
         self.data[y as usize * self.width as usize + x as usize]
     }
+
+    /// Sample the mask at a fractional position, interpolating between texels.
+    ///
+    /// The model emits 320x320 while a printed photo is thousands of pixels
+    /// across, so the mask is magnified around six times. Picking the nearest
+    /// texel makes that magnification visible as blocky stair-steps along the
+    /// hair and chin; interpolating turns the same data into a smooth edge.
+    ///
+    /// `u` and `v` are in mask pixel space, where 0.5 is the centre of the
+    /// first texel.
+    pub fn sample_bilinear(&self, u: f32, v: f32) -> u8 {
+        if self.width == 0 || self.height == 0 {
+            return 0;
+        }
+
+        // Shift to texel centres, then clamp so edges repeat instead of fading
+        // to zero — a mask that faded at the border would ring the subject with
+        // background colour.
+        let x = (u - 0.5).clamp(0.0, (self.width - 1) as f32);
+        let y = (v - 0.5).clamp(0.0, (self.height - 1) as f32);
+
+        let x0 = x.floor() as u32;
+        let y0 = y.floor() as u32;
+        let x1 = (x0 + 1).min(self.width - 1);
+        let y1 = (y0 + 1).min(self.height - 1);
+        let fx = x - x0 as f32;
+        let fy = y - y0 as f32;
+
+        let top = self.at(x0, y0) as f32 * (1.0 - fx) + self.at(x1, y0) as f32 * fx;
+        let bottom = self.at(x0, y1) as f32 * (1.0 - fx) + self.at(x1, y1) as f32 * fx;
+        (top * (1.0 - fy) + bottom * fy).round().clamp(0.0, 255.0) as u8
+    }
 }
 
 /// What a brush stroke does to the mask.
@@ -224,9 +256,10 @@ fn bounds(stroke: &BrushStroke, reach: f32, width: u32, height: u32) -> (u32, u3
 
 /// Replace the background with a flat colour, using the mask as coverage.
 ///
-/// `rgba` is modified in place. The mask is sampled with nearest neighbour if
-/// it is smaller than the image, which is normal: the model works at a fixed
-/// resolution well below print size.
+/// `rgba` is modified in place. The mask is normally much smaller than the
+/// image — the model works at a fixed resolution well below print size — so it
+/// is sampled bilinearly. Nearest neighbour here would show the magnification
+/// as stair-steps along the hair and chin.
 pub fn composite_background(
     rgba: &mut [u8],
     width: u32,
@@ -234,14 +267,18 @@ pub fn composite_background(
     mask: &AlphaMask,
     background: [u8; 3],
 ) {
-    if mask.width == 0 || mask.height == 0 {
+    if mask.width == 0 || mask.height == 0 || width == 0 || height == 0 {
         return;
     }
+    let sx = mask.width as f32 / width as f32;
+    let sy = mask.height as f32 / height as f32;
+
     for y in 0..height {
-        let my = (y as u64 * mask.height as u64 / height.max(1) as u64) as u32;
+        // Sample from the centre of each destination pixel, not its corner.
+        let v = (y as f32 + 0.5) * sy;
         for x in 0..width {
-            let mx = (x as u64 * mask.width as u64 / width.max(1) as u64) as u32;
-            let alpha = mask.at(mx, my) as f32 / 255.0;
+            let u = (x as f32 + 0.5) * sx;
+            let alpha = mask.sample_bilinear(u, v) as f32 / 255.0;
             let idx = (y as usize * width as usize + x as usize) * 4;
             for c in 0..3 {
                 let subject = rgba[idx + c] as f32;
@@ -397,6 +434,59 @@ mod tests {
         assert_eq!(rgba[0], 10);
         let last = (15 * 16 + 15) * 4;
         assert_eq!(rgba[last + 2], 30);
+    }
+
+    #[test]
+    fn magnifying_a_mask_produces_a_gradient_not_stair_steps() {
+        // The visible symptom this fixes: a 320x320 mask stretched over a
+        // 2000px photo showed ~6px blocks along the hair. Interpolating means
+        // the transition spreads across the magnified pixels instead.
+        let mut rgba = vec![255u8; 64 * 4];
+        // Two texels: fully background on the left, fully subject on the right.
+        let mask = AlphaMask::new(2, 1, vec![0, 255]).unwrap();
+        composite_background(&mut rgba, 64, 1, &mask, [0, 0, 0]);
+
+        let values: Vec<u8> = (0..64).map(|x| rgba[x * 4]).collect();
+        let distinct: std::collections::BTreeSet<u8> = values.iter().copied().collect();
+        assert!(
+            distinct.len() > 8,
+            "expected a gradient across the boundary, got {} distinct values",
+            distinct.len()
+        );
+
+        // And it must still be monotonic: background at one end, subject at the
+        // other, never brightening backwards.
+        assert!(values.windows(2).all(|w| w[0] <= w[1]), "not monotonic: {values:?}");
+    }
+
+    #[test]
+    fn bilinear_sampling_reproduces_texel_centres_exactly() {
+        // Interpolation must not shift the mask. At a texel's own centre the
+        // sample has to be that texel's value, or the whole mask drifts by half
+        // a texel relative to the photo.
+        let mask = AlphaMask::new(4, 1, vec![0, 90, 180, 255]).unwrap();
+        for (i, expected) in [0u8, 90, 180, 255].iter().enumerate() {
+            let got = mask.sample_bilinear(i as f32 + 0.5, 0.5);
+            assert_eq!(got, *expected, "texel {i} centre sampled as {got}");
+        }
+    }
+
+    #[test]
+    fn sampling_outside_the_mask_clamps_to_the_edge() {
+        // Falling to zero outside would ring the subject with background where
+        // it touches the frame.
+        let mask = AlphaMask::new(2, 2, vec![255, 255, 255, 255]).unwrap();
+        assert_eq!(mask.sample_bilinear(-5.0, -5.0), 255);
+        assert_eq!(mask.sample_bilinear(99.0, 99.0), 255);
+    }
+
+    #[test]
+    fn a_uniform_mask_stays_uniform_when_magnified() {
+        // Interpolation must not introduce variation that was never there.
+        let mut rgba = vec![200u8; 32 * 32 * 4];
+        let mask = AlphaMask::filled(4, 4, 255);
+        composite_background(&mut rgba, 32, 32, &mask, [0, 0, 0]);
+        assert!(rgba.chunks_exact(4).all(|p| p[0] == 200), "uniform mask varied");
     }
 
     #[test]

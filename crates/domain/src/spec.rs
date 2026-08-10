@@ -420,9 +420,20 @@ fn merge(base: &mut serde_json::Value, patch: &serde_json::Value) {
 /// file and the offline guarantee stays trivial.
 pub const HR_SPECS_JSON: &str = include_str!("../../../specs/hr.json");
 
-/// Every spec the app ships with.
+/// Widely used non-Croatian formats. Kept in a separate file because none of
+/// them carries a verified source, and mixing them with the Croatian specs
+/// would blur that distinction.
+pub const INTERNATIONAL_SPECS_JSON: &str = include_str!("../../../specs/international.json");
+
+/// Every spec the app ships with, Croatian ones first.
+///
+/// `inherits` is resolved per file, so an international spec cannot inherit
+/// from a Croatian one. That is deliberate: the two sets have different
+/// provenance and should not silently share numbers.
 pub fn builtin_specs() -> Result<Vec<Spec>, SpecError> {
-    load_specs(HR_SPECS_JSON)
+    let mut specs = load_specs(HR_SPECS_JSON)?;
+    specs.extend(load_specs(INTERNATIONAL_SPECS_JSON)?);
+    Ok(specs)
 }
 
 #[cfg(test)]
@@ -432,11 +443,45 @@ mod tests {
     #[test]
     fn the_croatian_specs_load() {
         let specs = builtin_specs().expect("bundled specs must parse");
-        assert_eq!(specs.len(), 3, "expected passport, putni list, treaty");
         let ids: Vec<&str> = specs.iter().map(|s| s.id.as_str()).collect();
         assert!(ids.contains(&"hr-passport-35x45"));
         assert!(ids.contains(&"hr-putni-list-30x35"));
         assert!(ids.contains(&"hr-intl-treaty-35x45"));
+    }
+
+    #[test]
+    fn the_international_specs_load() {
+        let specs = builtin_specs().expect("bundled specs must parse");
+        let ids: Vec<&str> = specs.iter().map(|s| s.id.as_str()).collect();
+        assert!(ids.contains(&"us-visa-51x51"));
+        assert!(ids.contains(&"schengen-visa-35x45"));
+        assert!(ids.contains(&"free-custom"));
+    }
+
+    /// The whole point of splitting the files: a spec without a named
+    /// regulation must never claim to be verified, because the UI uses this to
+    /// tell the user which numbers to double-check.
+    #[test]
+    fn only_the_croatian_specs_claim_to_be_verified() {
+        for spec in builtin_specs().unwrap() {
+            if spec.id.starts_with("hr-") {
+                continue;
+            }
+            assert_ne!(
+                spec.confidence,
+                Confidence::Verified,
+                "{} claims verified without a regulation behind it",
+                spec.id
+            );
+        }
+    }
+
+    #[test]
+    fn the_us_format_is_square() {
+        // A square target is the one shape most likely to expose a bug in code
+        // that quietly assumes portrait.
+        let s = spec("us-visa-51x51");
+        assert_eq!(s.print.width_mm, s.print.height_mm);
     }
 
     fn spec(id: &str) -> Spec {

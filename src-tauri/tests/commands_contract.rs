@@ -64,6 +64,64 @@ fn every_invoked_command_is_registered() {
     );
 }
 
+/// Commands taking a whole photo must accept raw bytes, not a JSON array.
+///
+/// A 2000x1333 image is 10.7MB, which as a JSON number array becomes 32MB of
+/// text costing around two seconds to encode and parse. Anything reintroducing
+/// `rgba: Vec<u8>` as a command argument would silently make the app slow
+/// again, which is easy to do and hard to notice.
+#[test]
+fn pixel_commands_take_a_raw_body() {
+    let src = repo_root().join("src-tauri").join("src");
+    let sources: String = std::fs::read_dir(&src)
+        .expect("cannot read src-tauri/src")
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "rs"))
+        .map(|p| read(&p))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert!(
+        !sources.contains("rgba: Vec<u8>"),
+        "a command takes pixels as a JSON array; use tauri::ipc::Request and raw_body instead"
+    );
+
+    let ipc_ts = read(&repo_root().join("src").join("lib").join("ipc.ts"));
+    assert!(
+        !ipc_ts.contains("Array.from(rgba)") && !ipc_ts.contains("Array.from(photo.rgba)"),
+        "ipc.ts converts pixels to a number array; send the ArrayBuffer instead"
+    );
+}
+
+/// The binary layouts are defined twice — once in Rust, once in TypeScript —
+/// and nothing but agreement makes them work. These pin the field order so a
+/// change on one side without the other fails here rather than at print time.
+#[test]
+fn binary_protocol_layouts_match_on_both_sides() {
+    let background_rs = read(&repo_root().join("src-tauri").join("src").join("background.rs"));
+    let commands_rs = read(&repo_root().join("src-tauri").join("src").join("commands.rs"));
+    let ipc_ts = read(&repo_root().join("src").join("lib").join("ipc.ts"));
+
+    // Mask response: width, height, ratio, name length, name, data.
+    for field in ["mask.width.to_le_bytes", "mask.height.to_le_bytes", "ratio.to_le_bytes"] {
+        assert!(background_rs.contains(field), "mask_response no longer writes {field}");
+    }
+    for read_call in ["getUint32(0, true)", "getUint32(4, true)", "getFloat32(8, true)"] {
+        assert!(ipc_ts.contains(read_call), "decodeMask no longer reads {read_call}");
+    }
+
+    // Print body: a little-endian u32 JSON length, then the JSON, then pixels.
+    assert!(
+        commands_rs.contains("u32::from_le_bytes([body[0], body[1], body[2], body[3]])"),
+        "parse_print_request no longer reads a little-endian length prefix"
+    );
+    assert!(
+        ipc_ts.contains("setUint32(0, json.byteLength, true)"),
+        "invokePrint no longer writes a little-endian length prefix"
+    );
+}
+
 /// Error keys produced by Rust must exist in the translation table, or the UI
 /// would display a raw key like "error.print.failed" to the user.
 #[test]

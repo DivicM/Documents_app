@@ -98,6 +98,62 @@ fn load_config() -> Result<Config, UiError> {
     })
 }
 
+/// Sheet settings as they cross the IPC boundary.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SheetSettingsDto {
+    pub paper_id: String,
+    pub count: u32,
+    pub margin_mm: f64,
+    pub gutter_mm: f64,
+    pub align_top_left: bool,
+    pub cut_marks: bool,
+    pub quarter_turn: bool,
+    pub turn_photo: bool,
+    pub printer: String,
+}
+
+impl From<&platform::presets::SheetSettings> for SheetSettingsDto {
+    fn from(s: &platform::presets::SheetSettings) -> Self {
+        Self {
+            paper_id: s.paper_id.clone(),
+            count: s.count,
+            margin_mm: s.margin_mm,
+            gutter_mm: s.gutter_mm,
+            align_top_left: s.align_top_left,
+            cut_marks: s.cut_marks,
+            quarter_turn: s.quarter_turn,
+            turn_photo: s.turn_photo,
+            printer: s.printer.clone(),
+        }
+    }
+}
+
+/// Read the persisted sheet settings, or defaults if none are stored yet.
+#[tauri::command]
+pub fn get_sheet_settings() -> Result<SheetSettingsDto, UiError> {
+    Ok(SheetSettingsDto::from(&load_config()?.sheet))
+}
+
+/// Persist the sheet settings, leaving calibrations and presets untouched.
+#[tauri::command]
+pub fn save_sheet_settings(settings: SheetSettingsDto) -> Result<(), UiError> {
+    let mut cfg = load_config()?;
+    cfg.sheet = platform::presets::SheetSettings {
+        paper_id: settings.paper_id,
+        count: settings.count,
+        margin_mm: settings.margin_mm,
+        gutter_mm: settings.gutter_mm,
+        align_top_left: settings.align_top_left,
+        cut_marks: settings.cut_marks,
+        quarter_turn: settings.quarter_turn,
+        turn_photo: settings.turn_photo,
+        printer: settings.printer,
+    };
+    cfg.save(&config_path()?).map_err(|e| {
+        UiError::with("error.config.save_failed", serde_json::json!({ "detail": e.to_string() }))
+    })
+}
+
 #[tauri::command]
 pub fn list_presets() -> Result<Vec<PresetSummary>, UiError> {
     let cfg = load_config()?;

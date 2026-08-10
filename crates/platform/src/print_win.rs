@@ -6,7 +6,8 @@
 //! raster of exactly that size 1:1.
 
 use crate::print::{
-    DeviceDpi, JobId, Margins, PaperSize, PrintBackend, PrintError, PrintJob, PrinterInfo, Result,
+    DeviceDpi, DevicePaper, JobId, Margins, PaperSize, PrintBackend, PrintError, PrintJob,
+    PrinterInfo, Result,
 };
 
 use windows::core::PCWSTR;
@@ -139,6 +140,24 @@ impl PrintBackend for WindowsPrintBackend {
             )));
         }
         Ok(DeviceDpi { x: x as u32, y: y as u32 })
+    }
+
+    fn device_paper(&self, printer: &str) -> Result<DevicePaper> {
+        let dc = PrinterDc::open(printer)?;
+        let dpi_x = dc.caps(LOGPIXELSX);
+        let dpi_y = dc.caps(LOGPIXELSY);
+        if dpi_x <= 0 || dpi_y <= 0 {
+            return Err(PrintError::Backend("driver reported no resolution".into()));
+        }
+
+        let to_mm = |px: i32, dpi: i32| (px as f64) * 25.4 / (dpi as f64);
+
+        Ok(DevicePaper {
+            physical_width_mm: to_mm(dc.caps(PHYSICALWIDTH), dpi_x),
+            physical_height_mm: to_mm(dc.caps(PHYSICALHEIGHT), dpi_y),
+            printable_width_mm: to_mm(dc.caps(HORZRES), dpi_x),
+            printable_height_mm: to_mm(dc.caps(VERTRES), dpi_y),
+        })
     }
 
     fn hardware_margins_mm(&self, printer: &str, _paper: PaperSize) -> Result<Margins> {

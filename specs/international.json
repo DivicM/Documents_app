@@ -1,0 +1,182 @@
+{
+  "schema_version": 1,
+  "_note": "Široko korišteni međunarodni formati. Za razliku od specs/hr.json, ovdje NEMAM službeni izvor uz sebe — sve je označeno \"confidence\": \"baseline\" i UI to prikazuje korisniku. Dimenzije papira i visine glave su dobro dokumentirane, ali provjerite kod nadležnog tijela prije predaje.",
+
+  "specs": [
+    {
+      "id": "us-visa-51x51",
+      "country": "US",
+      "document": "visa_and_passport",
+      "confidence": "baseline",
+      "display_name": {
+        "hr": "SAD viza i putovnica (2×2\")",
+        "en": "US visa and passport (2x2 in)"
+      },
+
+      "print": {
+        "width_mm": 51,
+        "height_mm": 51,
+        "source": "baseline",
+        "_source_note": "2×2 inča = 50.8 mm, u praksi se navodi 51×51 mm. Kvadratni format je specifičnost američkih zahtjeva.",
+        "min_dpi": 300,
+        "preferred_dpi": 600
+      },
+
+      "geometry": {
+        "anchor": "chin_line",
+        "head_measure": "chin_to_crown",
+        "age_variants": [
+          {
+            "id": "adult",
+            "head_height_mm": { "min": 25.4, "max": 34.9 },
+            "source": "baseline",
+            "_note": "1 do 1 3/8 inča od brade do tjemena. Raspon je širi nego kod HR putovnice."
+          }
+        ],
+        "horizontal_centering": {
+          "required": true,
+          "tolerance_mm": 1.5,
+          "source_required": "baseline",
+          "source_tolerance": "derived"
+        },
+        "chin_line_from_bottom_mm": {
+          "value": null,
+          "source": "unknown",
+          "_note": "Kao i kod HR speca: nemam pouzdanu kotu, pa se glava centrira po visini."
+        }
+      },
+
+      "pose": {
+        "frontal_required": true,
+        "max_roll_deg": 5,
+        "max_yaw_deg": 5,
+        "max_pitch_deg": 5,
+        "tolerance_source": "derived"
+      },
+
+      "background": {
+        "requirement_text": "Bijela ili gotovo bijela, bez uzoraka i sjena.",
+        "source": "baseline",
+        "allowed": [
+          { "name": "white", "rgb": [255, 255, 255], "tolerance": 12, "default": true },
+          { "name": "off_white", "rgb": [245, 245, 245], "tolerance": 12 }
+        ],
+        "uniformity_max_stddev": 6,
+        "uniformity_source": "derived",
+        "shadows_allowed": false,
+        "only_subject_in_frame": true
+      },
+
+      "layout_defaults": {
+        "paper": "10x15cm",
+        "count": 4,
+        "cut_marks": true
+      },
+
+      "rules": [
+        { "id": "head_height",        "severity": "error" },
+        { "id": "horizontal_center",  "severity": "error" },
+        { "id": "pose_roll",          "severity": "error" },
+        { "id": "background_uniform", "severity": "error" },
+        { "id": "resolution_min",     "severity": "error" },
+        { "id": "sharpness",          "severity": "warning", "min_laplacian_var": 100 },
+        { "id": "exposure",           "severity": "warning" }
+      ]
+    },
+
+    {
+      "id": "schengen-visa-35x45",
+      "country": "EU",
+      "document": "schengen_visa",
+      "confidence": "baseline",
+      "display_name": {
+        "hr": "Schengenska viza",
+        "en": "Schengen visa"
+      },
+
+      "print": {
+        "width_mm": 35,
+        "height_mm": 45,
+        "source": "baseline",
+        "min_dpi": 300,
+        "preferred_dpi": 600
+      },
+
+      "geometry": {
+        "anchor": "chin_line",
+        "head_measure": "chin_to_crown",
+        "age_variants": [
+          {
+            "id": "adult",
+            "head_height_mm": { "min": 31.5, "max": 36.0 },
+            "source": "baseline",
+            "_note": "70-80% visine slike, isto kao ICAO 9303 praksa i HR putovnica."
+          }
+        ],
+        "horizontal_centering": {
+          "required": true,
+          "tolerance_mm": 1.0,
+          "source_required": "baseline",
+          "source_tolerance": "derived"
+        },
+        "chin_line_from_bottom_mm": { "value": null, "source": "unknown" }
+      },
+
+      "pose": {
+        "frontal_required": true,
+        "max_roll_deg": 5,
+        "max_yaw_deg": 5,
+        "max_pitch_deg": 5,
+        "tolerance_source": "derived"
+      },
+
+      "background": {
+        "requirement_text": "Jednobojna svijetla pozadina, bez uzoraka i sjena.",
+        "source": "baseline",
+        "allowed": [
+          { "name": "light_grey", "rgb": [235, 235, 235], "tolerance": 15, "default": true },
+          { "name": "white", "rgb": [255, 255, 255], "tolerance": 12 }
+        ],
+        "uniformity_max_stddev": 6,
+        "uniformity_source": "derived",
+        "shadows_allowed": false,
+        "only_subject_in_frame": true
+      },
+
+      "layout_defaults": {
+        "paper": "10x15cm",
+        "count": 6,
+        "cut_marks": true
+      },
+
+      "rules": [
+        { "id": "head_height",        "severity": "error" },
+        { "id": "horizontal_center",  "severity": "error" },
+        { "id": "pose_roll",          "severity": "error" },
+        { "id": "background_uniform", "severity": "error" },
+        { "id": "resolution_min",     "severity": "error" },
+        { "id": "sharpness",          "severity": "warning", "min_laplacian_var": 100 },
+        { "id": "exposure",           "severity": "warning" }
+      ]
+    },
+
+    {
+      "id": "free-custom",
+      "confidence": "baseline",
+      "display_name": {
+        "hr": "Prilagođeno (bez provjera)",
+        "en": "Custom (no checks)"
+      },
+      "print": {
+        "width_mm": 35,
+        "height_mm": 45,
+        "min_dpi": 300
+      },
+      "layout_defaults": {
+        "paper": "10x15cm",
+        "count": 6,
+        "cut_marks": true
+      }
+    }
+  ]
+}

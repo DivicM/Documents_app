@@ -26,8 +26,15 @@ fn main() {
     };
     println!("image: {} x {} px", img.width(), img.height());
 
-    let model = std::path::Path::new("models/birefnet_lite_fp16.onnx");
-    let mut seg = match vision::segment::BackgroundSegmenter::from_path(model) {
+    let model = std::path::Path::new("models/u2netp.onnx");
+    // `--cpu` forces the CPU provider, so the two backends can be compared on
+    // the same machine and image.
+    let force_cpu = std::env::args().any(|a| a == "--cpu");
+    let mut seg = match if force_cpu {
+        vision::segment::BackgroundSegmenter::cpu_only(model)
+    } else {
+        vision::segment::BackgroundSegmenter::from_path(model)
+    } {
         Ok(s) => s,
         Err(e) => {
             eprintln!("{e}");
@@ -48,12 +55,25 @@ fn main() {
     let first = started.elapsed();
     println!("mask {} x {} in {first:?} (first run)", mask.width, mask.height);
 
-    // A second run reuses the warmed session, which is what the user actually
-    // experiences after the first photo.
-    let again = std::time::Instant::now();
-    if seg.segment(&img).is_ok() {
-        println!("second run: {:?}", again.elapsed());
+    // Several warm runs. `--pause` waits between them, which distinguishes a
+    // session that degrades from a GPU that drops to a low-power state while
+    // idle: the first tells us to fix the code, the second tells us not to.
+    let pause = std::env::args().any(|a| a == "--pause");
+    for i in 2..=5 {
+        if pause {
+            std::thread::sleep(std::time::Duration::from_secs(5));
+        }
+        let again = std::time::Instant::now();
+        if seg.segment(&img).is_ok() {
+            println!("run {i}: {:?}", again.elapsed());
+        }
     }
+
+    // Split the warm cost into its parts, so optimisation targets the part that
+    // actually dominates rather than the one that looks suspicious.
+    let t = std::time::Instant::now();
+    let pre = vision::segment::preprocess_for_bench(&img);
+    println!("  preprocess only: {:?} ({} floats)", t.elapsed(), pre.len());
 
     // A quick sanity read: a portrait should be part subject, part background,
     // not uniformly one or the other.

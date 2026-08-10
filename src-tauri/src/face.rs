@@ -126,10 +126,12 @@ fn to_dto(d: &Detection) -> DetectionDto {
 #[tauri::command]
 pub fn detect_face(
     state: tauri::State<'_, DetectorState>,
-    rgba: Vec<u8>,
-    width: u32,
-    height: u32,
+    request: tauri::ipc::Request<'_>,
 ) -> Result<Option<DetectionDto>, UiError> {
+    let width = crate::commands::header_u32(&request, "x-width")?;
+    let height = crate::commands::header_u32(&request, "x-height")?;
+    let rgba = crate::commands::raw_body(&request)?;
+
     if width == 0 || height == 0 {
         return Err(UiError::new("error.image.empty"));
     }
