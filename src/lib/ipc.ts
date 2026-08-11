@@ -883,6 +883,10 @@ export interface SheetSettings {
   /** Turn the picture inside its frame. */
   turnPhoto: boolean;
   printer: string;
+  /** UI text scale as a percentage; 100 is the design size. */
+  fontScalePercent: number;
+  /** Start with the window filling the screen. */
+  startMaximized: boolean;
 }
 
 interface RawSheetSettings {
@@ -895,6 +899,8 @@ interface RawSheetSettings {
   quarter_turn: boolean;
   turn_photo: boolean;
   printer: string;
+  font_scale_percent: number;
+  start_maximized: boolean;
 }
 
 export async function getSheetSettings(): Promise<SheetSettings> {
@@ -909,6 +915,8 @@ export async function getSheetSettings(): Promise<SheetSettings> {
     quarterTurn: r.quarter_turn,
     turnPhoto: r.turn_photo,
     printer: r.printer,
+    fontScalePercent: r.font_scale_percent,
+    startMaximized: r.start_maximized,
   };
 }
 
@@ -924,6 +932,8 @@ export async function saveSheetSettings(s: SheetSettings): Promise<void> {
       quarter_turn: s.quarterTurn,
       turn_photo: s.turnPhoto,
       printer: s.printer,
+      font_scale_percent: s.fontScalePercent,
+      start_maximized: s.startMaximized,
     } satisfies RawSheetSettings,
   });
 }

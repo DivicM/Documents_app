@@ -40,7 +40,6 @@ export function FormatPicker({ specs, selectedId, onSelect }: Props) {
   return (
     <div className="format-picker">
       <h2>{t("picker.title")}</h2>
-      <p className="hint">{t("picker.hint")}</p>
 
       {groups.map(([groupKey, items]) => (
         <section key={groupKey} className="format-group">
@@ -65,15 +64,8 @@ export function FormatPicker({ specs, selectedId, onSelect }: Props) {
 
                 <span className="format-card-body">
                   <span className="format-card-name">{spec.name}</span>
-                  <span className="format-card-detail">
-                    {spec.headHeightMm !== null
-                      ? t("picker.head", { mm: formatMm(spec.headHeightMm, 1) })
-                      : t("spec.free_mode")}
-                  </span>
-                  {spec.confidence !== "verified" && !spec.freeMode && (
-                    <span className="format-card-warning" title={t("picker.unverified_hint")}>
-                      ⚠ {t("picker.unverified")}
-                    </span>
+                  {spec.freeMode && (
+                    <span className="format-card-detail">{t("spec.free_mode")}</span>
                   )}
                 </span>
               </button>
@@ -81,8 +73,6 @@ export function FormatPicker({ specs, selectedId, onSelect }: Props) {
           })}
         </section>
       ))}
-
-      <p className="hint">{t("picker.unverified_hint")}</p>
     </div>
   );
 }

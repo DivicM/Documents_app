@@ -83,10 +83,14 @@ export function DropZone({ onPick, loadedName }: Props) {
       {!dragging && (
         <>
           <p className="dropzone-or">{t("drop.or")}</p>
-          <button type="button" className="primary" onClick={() => inputRef.current?.click()}>
+          <button
+            type="button"
+            className="primary"
+            onClick={() => inputRef.current?.click()}
+            title={t("drop.hint")}
+          >
             {t("drop.browse")}
           </button>
-          <p className="hint dropzone-hint">{t("drop.hint")}</p>
         </>
       )}
 

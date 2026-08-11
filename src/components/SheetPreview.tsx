@@ -14,7 +14,8 @@ interface Props {
   hardwareMarginMm?: { left: number; top: number; right: number; bottom: number };
   showCutMarks: boolean;
   /** The loaded photo. Without one the sheet shows empty frames. */
-  image?: HTMLImageElement | null;
+  /** A canvas as well as an image; the composited copy is produced on one. */
+  image?: HTMLImageElement | HTMLCanvasElement | null;
   /** Region of the photo each copy shows. */
   crop?: CropResult | null;
   /** Straightening angle applied to the crop, in degrees. */
@@ -44,16 +45,19 @@ export function SheetPreview({
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
-  // Measured rather than assumed: a fixed width overflows whenever the column
-  // is narrower than the guess, which is what pushed the sheet off screen.
-  const [availableWidth, setAvailableWidth] = useState(320);
+  /**
+   * Both axes are measured rather than assumed. A guessed width overflowed
+   * whenever the column was narrower; a guessed height clipped the sheet from
+   * the bottom, hiding whole rows of photographs.
+   */
+  const [avail, setAvail] = useState({ w: 320, h: maxHeightPx });
 
   useEffect(() => {
     const el = wrapRef.current;
     if (!el) return;
     const observer = new ResizeObserver((entries) => {
-      const w = entries[0]?.contentRect.width;
-      if (w && w > 0) setAvailableWidth(w);
+      const r = entries[0]?.contentRect;
+      if (r && r.width > 0 && r.height > 0) setAvail({ w: r.width, h: r.height });
     });
     observer.observe(el);
     return () => observer.disconnect();
@@ -65,10 +69,10 @@ export function SheetPreview({
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    // Fit within both the measured width and a height cap, so a tall sheet
-    // shrinks instead of running off the panel.
-    const scaleByWidth = fitScale(mm(paperWidthMm), availableWidth);
-    const scaleByHeight = fitScale(mm(paperHeightMm), maxHeightPx);
+    // Fit within the space actually available on both axes, so the whole sheet
+    // is visible however the panel is shaped.
+    const scaleByWidth = fitScale(mm(paperWidthMm), avail.w);
+    const scaleByHeight = fitScale(mm(paperHeightMm), avail.h);
     const scale = Math.min(scaleByWidth, scaleByHeight);
 
     const dpr = window.devicePixelRatio || 1;
@@ -166,8 +170,7 @@ export function SheetPreview({
     crop,
     rotationDeg,
     turnPhoto,
-    availableWidth,
-    maxHeightPx,
+    avail,
   ]);
 
   return (
@@ -190,7 +193,7 @@ export function SheetPreview({
  */
 function drawPhoto(
   ctx: CanvasRenderingContext2D,
-  image: HTMLImageElement,
+  image: HTMLImageElement | HTMLCanvasElement,
   crop: CropResult,
   rotationDeg: number,
   p: { xMm: number; yMm: number; widthMm: number; heightMm: number; rotated: boolean },
@@ -227,6 +230,8 @@ function drawPhoto(
   ctx.rotate(theta);
   ctx.translate(-(c.x + c.width / 2), -(c.y + c.height / 2));
 
-  ctx.drawImage(image, 0, 0, image.naturalWidth, image.naturalHeight);
+  const srcW = image instanceof HTMLCanvasElement ? image.width : image.naturalWidth;
+  const srcH = image instanceof HTMLCanvasElement ? image.height : image.naturalHeight;
+  ctx.drawImage(image, 0, 0, srcW, srcH);
   ctx.restore();
 }

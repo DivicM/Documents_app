@@ -17,6 +17,25 @@ use crate::commands::UiError;
 #[derive(Default)]
 pub struct DetectorState(pub Mutex<Option<FaceDetector>>);
 
+/// Build the detector ahead of time, so loading a photo does not wait for it.
+///
+/// Same reasoning as `background::preload`: the session build is a fixed cost
+/// that has no reason to land on the user's first action. Silent on failure —
+/// `detect_face` still loads the model itself if this did not run.
+pub fn preload(state: &DetectorState) {
+    let Ok(mut guard) = state.0.lock() else { return };
+    if guard.is_some() {
+        return;
+    }
+    ensure_runtime_path();
+    let Some(model) = resource_path("models/face_detection_yunet_2023mar.onnx") else {
+        return;
+    };
+    if let Ok(detector) = FaceDetector::from_path(&model) {
+        *guard = Some(detector);
+    }
+}
+
 /// Where the bundled files live relative to the executable.
 ///
 /// In development they sit in the repository root; in an installed build they

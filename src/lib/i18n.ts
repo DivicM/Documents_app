@@ -9,8 +9,6 @@ type Params = Record<string, string | number>;
 const hr: Record<string, string> = {
   "app.title": "Fotografije za dokumente",
 
-  "step.format": "Format",
-  "step.layout": "Raspored",
   "step.print": "Ispis",
 
   "format.width": "Širina (mm)",
@@ -41,7 +39,6 @@ const hr: Record<string, string> = {
     "Printer je namješten na {width} × {height} mm, pa se koristi ta veličina umjesto odabrane. Veličinu papira mijenjajte u postavkama printera u Windowsima.",
   "printer.refresh": "Osvježi",
 
-  "calibration.title": "Kalibracija",
   "calibration.never": "Nije kalibrirano",
   "calibration.done_at": "Kalibrirano: {date}",
   "calibration.print_square": "1. Ispiši kvadrat 50 × 50 mm",
@@ -89,38 +86,19 @@ const hr: Record<string, string> = {
   "error.mask.not_segmented": "Prvo uklonite pozadinu.",
   "error.mask.size_mismatch": "Neispravna veličina maske.",
 
-  "bg.title": "Pozadina",
   "bg.remove": "Ukloni pozadinu",
   "bg.working": "Obrađujem…",
   "bg.enabled": "Zamijeni pozadinu",
   "bg.colour": "Boja pozadine",
-  "bg.colour_grey": "Siva",
   "bg.colour_white": "Bijela",
-  "bg.eyedropper": "Pipeta",
-  "bg.eyedropper_hint": "Kliknite na sliku da uzmete boju",
   "bg.threshold": "Prag maske",
-  "bg.threshold_hint":
-    "Više steže rub (uklanja oreol), manje vraća detalje kose.",
   "bg.done": "Pozadina uklonjena ({backend}, {ratio} % osobe)",
-  "bg.brush": "Kist",
-  "bg.brush_keep": "Vrati",
-  "bg.brush_erase": "Obriši",
-  "bg.brush_size": "Veličina kista",
-  "bg.undo": "Poništi potez",
-  "bg.reset": "Vrati na automatsko",
-  "bg.brush_hint": "Crtajte po slici da ispravite masku.",
   "bg.show_mask": "Prikaži masku",
   "error.crop.outside_image":
     "Izrez ne stane u sliku (nedostaje: lijevo {left}, gore {top}, desno {right}, dolje {bottom} px). Najmanja visina glave koja stane je {minHeadMm} mm.",
 
-  "face.detect": "Prepoznaj lice",
   "face.detecting": "Prepoznajem…",
   "face.none_found": "Lice nije pronađeno.",
-  "face.found": "Lice pronađeno ({confidence} %)",
-  "face.roll": "Nagib glave: {deg}°",
-  "face.eye_distance": "Razmak očiju: {px} px",
-  "face.head_height": "Visina glave (mm)",
-  "face.auto": "AUTO",
   "face.reset": "Vrati",
   "face.chin": "Brada",
   "face.crown": "Tjeme",
@@ -131,17 +109,11 @@ const hr: Record<string, string> = {
   "face.rotation": "Ispravljanje nagiba (°)",
   "face.apply_suggested": "Postavi visinu glave na {mm} mm",
   "face.reset_all": "Vrati sve na automatski",
-  "face.max_dpi": "Najveći DPI bez povećavanja: {dpi}",
-  "face.load_image": "Učitaj sliku",
 
   "error.spec.load_failed": "Nije moguće učitati specifikacije. ({detail})",
   "error.spec.not_found": "Nepoznata specifikacija: {id}.",
 
-  "spec.label": "Dokument",
-  "spec.custom": "Prilagođeno",
   "spec.free_mode": "Slobodan mod — bez provjera, samo upozorenje o rezoluciji.",
-  "spec.chin_line_note":
-    "Propis definira liniju brade grafički, bez brojke, pa se glava centrira po visini.",
 
   "compliance.title": "Provjera",
   "compliance.checked": "Provjereno",
@@ -190,7 +162,6 @@ const hr: Record<string, string> = {
   "rule.not_checked.exposure": "Ekspozicija još nije izmjerena.",
   "rule.not_checked.unknown": "Ovo pravilo program još ne provjerava.",
 
-  "adjust.title": "Svjetlina i boja",
   "adjust.exposure": "Ekspozicija (EV)",
   "adjust.contrast": "Kontrast",
   "adjust.temperature": "Toplina",
@@ -202,6 +173,9 @@ const hr: Record<string, string> = {
   "edit.undo_hint": "Ctrl+Z / Ctrl+Y",
 
   "preview.sheet": "Pregled ispisa",
+  "preview.single": "Gotova slika ({width} × {height} mm)",
+  "preview.zoom_in": "Uži izrez (veća glava)",
+  "preview.zoom_out": "Širi izrez (manja glava)",
   "preview.no_image": "Učitajte sliku da vidite kako će list izgledati.",
   "preview.no_crop": "Izrez nije moguć — prilagodite visinu glave ili točke.",
 
@@ -209,7 +183,6 @@ const hr: Record<string, string> = {
   "error.preset.name_too_long": "Ime predloška ne smije biti dulje od {max} znakova.",
   "error.preset.not_found": "Predložak „{name}” ne postoji.",
 
-  "preset.title": "Predlošci",
   "preset.explain":
     "Spremite trenutne postavke (format, papir, rubove, pozadinu, svjetlinu) da ih ne morate ponovno namještati.",
   "preset.name": "Ime predloška",
@@ -223,7 +196,6 @@ const hr: Record<string, string> = {
   "preset.confirm_delete": "Obrisati predložak „{name}”?",
   "preset.overwrite_hint": "Ime koje već postoji zamijenit će stari predložak.",
 
-  "mixed.title": "Miješani list",
   "mixed.enable": "Više formata na istom listu",
   "mixed.explain":
     "Stavite više različitih formata na isti papir — npr. 4 × osobna i 2 × putovnica.",
@@ -246,6 +218,12 @@ const hr: Record<string, string> = {
   "settings.tab_calibration": "Kalibracija",
   "settings.tab_mixed": "Miješani list",
   "settings.save": "Spremi postavke",
+  "settings.start_maximized": "Pokreni preko cijelog zaslona",
+  "settings.start_maximized_hint":
+    "Vrijedi od sljedećeg pokretanja aplikacije.",
+  "settings.font_scale": "Veličina teksta",
+  "settings.font_scale_hint":
+    "Povećava ili smanjuje cijelo sučelje. Ne utječe na ispis.",
   "settings.quarter_turn": "Vodoravni format (npr. 45 × 35 umjesto 35 × 45)",
   "settings.quarter_turn_hint":
     "Okreće oblik okvira na listu. Mijenja koliko slika stane na papir.",
@@ -268,28 +246,18 @@ const hr: Record<string, string> = {
   "drop.active": "Pustite za učitavanje",
   "drop.rejected": "Nije slika. Odaberite JPEG ili PNG.",
   "drop.loaded": "Učitano: {name}",
-  "drop.change": "Promijeni sliku",
 
   "picker.title": "Za koji dokument?",
-  "picker.hint": "Format određuje dimenzije i propisanu visinu glave.",
   "picker.size": "{width} × {height} mm",
-  "picker.head": "Visina glave {mm} mm",
   "picker.group_hr": "Hrvatska",
   "picker.group_intl": "Međunarodno",
   "picker.group_other": "Ostalo",
-  "picker.unverified": "Nije službeno provjereno",
-  "picker.unverified_hint":
-    "Ove dimenzije su široko korištene, ali za njih nemamo službeni izvor. Provjerite kod nadležnog tijela prije predaje.",
-  "picker.verified_hint": "Dimenzije su iz propisa.",
 
   "editor.group_crop": "Kadriranje",
   "editor.group_tone": "Svjetlina i boja",
   "editor.group_background": "Pozadina",
-  "editor.group_checks": "Provjera",
-  "editor.locked_ratio": "Format je zaključan na {width} × {height} mm.",
 
   "print.done": "Ispisano. Možete započeti novu fotografiju.",
-  "print.review": "Provjerite pregled prije ispisa.",
 
   "disclaimer":
     "Provjeravaju se samo mjerljivi kriteriji. Službenik može odbiti fotografiju i iz razloga koje program ne mjeri.",

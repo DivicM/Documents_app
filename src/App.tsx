@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CompliancePanel } from "./components/CompliancePanel";
 import { DropZone } from "./components/DropZone";
 import { FormatPicker } from "./components/FormatPicker";
 import { PhotoCanvas, type Anchors, type HandleName } from "./components/PhotoCanvas";
+import { PhotoPreview } from "./components/PhotoPreview";
 import { Section } from "./components/Section";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { SheetPreview } from "./components/SheetPreview";
+import { Stepper } from "./components/Stepper";
 import { StepBar } from "./components/StepBar";
 import {
   canRedo,
@@ -54,6 +55,63 @@ const CALIBRATION_PAPER = { widthMm: 210, heightMm: 297 };
  */
 const HEAD_HEIGHT_MM = 42;
 
+/**
+ * How much one press of the crop's +/- changes the head height, in millimetres.
+ *
+ * A larger head on the same print is a tighter crop, so these buttons adjust
+ * the head height rather than scaling anything on screen.
+ */
+const HEAD_HEIGHT_STEP_MM = 1;
+/** Bounds for that adjustment. Outside these the crop stops being usable. */
+const HEAD_HEIGHT_MIN_MM = 20;
+const HEAD_HEIGHT_MAX_MM = 60;
+
+/** Text scale bounds, matching the clamp the backend applies on save. */
+const FONT_SCALE_MIN = 50;
+const FONT_SCALE_MAX = 200;
+
+/**
+ * Longest edge of the copy used for detection, preview and editing.
+ *
+ * A 3600x5400 photograph is 74MB of RGBA. Running face detection, background
+ * segmentation and every tone adjustment over all of it costs seconds per
+ * keystroke, and none of that work needs the resolution: the models run at
+ * 320-640px internally, and the preview is a few hundred pixels on screen.
+ *
+ * The full-resolution pixels are kept separately and used only for printing,
+ * which happens once. 1600px is comfortably above what any of these consumers
+ * needs while cutting the pixel count of a 3600x5400 photo by about 11x.
+ */
+const WORKING_MAX_EDGE_PX = 1600;
+
+/** The reduced copy everything on the editing screen works from. */
+interface WorkingImage {
+  data: Uint8ClampedArray;
+  w: number;
+  h: number;
+  /** The same pixels as a canvas, for drawing without another decode. */
+  canvas: HTMLCanvasElement;
+}
+
+/** Downscale to at most `WORKING_MAX_EDGE_PX` on the longest edge. */
+function toWorkingSize(img: HTMLImageElement): WorkingImage | null {
+  const scale = Math.min(
+    1,
+    WORKING_MAX_EDGE_PX / Math.max(img.naturalWidth, img.naturalHeight),
+  );
+  const w = Math.max(1, Math.round(img.naturalWidth * scale));
+  const h = Math.max(1, Math.round(img.naturalHeight * scale));
+
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  if (!ctx) return null;
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(img, 0, 0, w, h);
+  return { data: ctx.getImageData(0, 0, w, h).data, w, h, canvas };
+}
+
 /** The four steps, in order. */
 const STEP_PICK = 0;
 const STEP_FORMAT = 1;
@@ -88,6 +146,13 @@ export default function App() {
 
   // Photo and face detection.
   const [image, setImage] = useState<HTMLImageElement | null>(null);
+  /**
+   * The reduced copy shown and edited, in state so a render follows it.
+   *
+   * `imagePixels` holds the same thing in a ref for the callbacks that need it
+   * synchronously; this is the version React draws from.
+   */
+  const [working, setWorking] = useState<WorkingImage | null>(null);
   const [detection, setDetection] = useState<FaceDetection | null>(null);
   const [detecting, setDetecting] = useState(false);
   const [crop, setCrop] = useState<CropResult | null>(null);
@@ -104,20 +169,20 @@ export default function App() {
   const [mask, setMask] = useState<ipc.Mask | null>(null);
   const [segmenting, setSegmenting] = useState(false);
   const [replaceBackground, setReplaceBackground] = useState(true);
-  const [bgColour, setBgColour] = useState<[number, number, number]>([235, 235, 235]);
+  const [bgColour, setBgColour] = useState<[number, number, number]>([255, 255, 255]);
   const [showMask, setShowMask] = useState(false);
-  const [brushMode, setBrushMode] = useState<"keep" | "erase" | null>(null);
-  const [brushRadius, setBrushRadius] = useState(24);
-  const [strokeCount, setStrokeCount] = useState(0);
   const [maskThreshold, setMaskThreshold] = useState(128);
-  /** When on, the next click on the photo picks the background colour. */
-  const [pickingColour, setPickingColour] = useState(false);
 
   // Document specification and validation.
   const [specs, setSpecs] = useState<ipc.SpecSummary[]>([]);
   /** Empty string means the free "custom" mode. */
   const [specId, setSpecId] = useState("");
-  const [validation, setValidation] = useState<ipc.Validation | null>(null);
+  /**
+   * Rules still run on every edit; only the panel that displayed them was
+   * removed from the UI. Keeping the result means the checks are one component
+   * away from being shown again, and the IPC contract stays exercised.
+   */
+  const [, setValidation] = useState<ipc.Validation | null>(null);
   const [imageStats, setImageStats] = useState<ipc.ImageStats | null>(null);
   const [bgStddev, setBgStddev] = useState<number | null>(null);
 
@@ -144,6 +209,8 @@ export default function App() {
   const [quarterTurn, setQuarterTurn] = useState(true);
   const [turnPhoto, setTurnPhoto] = useState(true);
   const [settingsStatus, setSettingsStatus] = useState<string | null>(null);
+  const [fontScale, setFontScale] = useState(100);
+  const [startMaximized, setStartMaximized] = useState(false);
 
   // Undo/redo over edit parameters. Snapshots are cheap because they hold
   // numbers, not pixels.
@@ -160,7 +227,7 @@ export default function App() {
       alignTopLeft: false,
       cutMarks: true,
       replaceBackground: true,
-      bgColour: [235, 235, 235],
+      bgColour: [255, 255, 255],
       exposureEv: 0,
       contrast: 0,
       temperature: 0,
@@ -169,16 +236,20 @@ export default function App() {
   );
   /** Set while applying an undo, so the restore is not recorded as an edit. */
   const restoring = useRef(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  /** Pixels of the loaded photo, kept so printing need not decode it again. */
-  const imagePixels = useRef<{ data: Uint8ClampedArray; w: number; h: number } | null>(null);
+  /**
+   * The working copy's pixels, for callbacks that need them synchronously.
+   *
+   * Reduced, not full resolution: detection, segmentation and tone all run on
+   * these. Printing reads the original separately.
+   */
+  const imagePixels = useRef<WorkingImage | null>(null);
   /**
    * The photo with its background already replaced, used for previewing.
    *
    * Built here rather than in the preview component so both the sheet and the
    * printer work from the same composited pixels.
    */
-  const [composited, setComposited] = useState<HTMLImageElement | null>(null);
+  const [composited, setComposited] = useState<HTMLCanvasElement | null>(null);
 
   // The rule from the brief: an override wins, otherwise the automatic value.
   const anchors: Anchors | null = useMemo(() => {
@@ -284,6 +355,20 @@ export default function App() {
       .catch((e) => setError(formatError(e)));
   }, []);
 
+  /**
+   * Apply the text scale by overriding the root font size.
+   *
+   * Text sizes in the stylesheet are in `em`, so they follow this one value.
+   * An earlier attempt used `zoom`, which scaled photographs and layout along
+   * with the type and so read as magnifying the window rather than enlarging
+   * the text.
+   *
+   * 14px is the design base declared on `:root`.
+   */
+  useEffect(() => {
+    document.documentElement.style.fontSize = `${(14 * fontScale) / 100}px`;
+  }, [fontScale]);
+
   // Restore the persisted sheet settings on startup.
   useEffect(() => {
     ipc
@@ -296,6 +381,8 @@ export default function App() {
         setAlignTopLeft(s.alignTopLeft);
         setCutMarks(s.cutMarks);
         setQuarterTurn(s.quarterTurn);
+        setFontScale(s.fontScalePercent);
+        setStartMaximized(s.startMaximized);
         setTurnPhoto(s.turnPhoto);
         // Only if that printer is still installed; otherwise the default
         // chosen by refreshPrinters stands.
@@ -320,6 +407,8 @@ export default function App() {
         quarterTurn,
         turnPhoto,
         printer: selectedPrinter,
+        fontScalePercent: fontScale,
+        startMaximized,
       });
       setSettingsStatus(t("settings.saved"));
     } catch (e) {
@@ -335,6 +424,8 @@ export default function App() {
     quarterTurn,
     turnPhoto,
     selectedPrinter,
+    fontScale,
+    startMaximized,
   ]);
 
   // Recompute the mixed layout whenever the groups or paper change.
@@ -465,25 +556,19 @@ export default function App() {
     setAnchorOverride({});
     // A new photo must not inherit the previous photo's mask.
     setMask(null);
-    setStrokeCount(0);
     setShowMask(false);
-    setBrushMode(null);
     setMaskThreshold(128);
-    setPickingColour(false);
     void ipc.clearMask().catch(() => {});
 
     try {
-      const canvas = document.createElement("canvas");
-      canvas.width = img.naturalWidth;
-      canvas.height = img.naturalHeight;
-      const ctx = canvas.getContext("2d", { willReadFrequently: true });
-      if (!ctx) throw new Error(t("error.image.decode_failed"));
-      ctx.drawImage(img, 0, 0);
-      const data = ctx.getImageData(0, 0, canvas.width, canvas.height);
-      // Kept for printing, so the file is decoded exactly once.
-      imagePixels.current = { data: data.data, w: canvas.width, h: canvas.height };
+      // Everything on this screen works from the reduced copy. The
+      // full-resolution pixels are read only when printing.
+      const work = toWorkingSize(img);
+      if (!work) throw new Error(t("error.image.decode_failed"));
+      imagePixels.current = work;
+      setWorking(work);
 
-      const found = await ipc.detectFace(data.data, canvas.width, canvas.height);
+      const found = await ipc.detectFace(work.data, work.w, work.h);
       setDetection(found);
       if (!found) setError(t("face.none_found"));
 
@@ -491,7 +576,7 @@ export default function App() {
       // busy background cannot make a soft portrait look sharp.
       try {
         setImageStats(
-          await ipc.analyseImage(data.data, canvas.width, canvas.height, found?.faceBox ?? null),
+          await ipc.analyseImage(work.data, work.w, work.h, found?.faceBox ?? null),
         );
       } catch {
         setImageStats(null);
@@ -531,17 +616,15 @@ export default function App() {
     setStep(STEP_PICK);
     setImage(null);
     setImageName(null);
+    setWorking(null);
     setDetection(null);
     setCrop(null);
     setCropError(null);
     setAnchorOverride({});
     setRotationOverride(null);
     setMask(null);
-    setStrokeCount(0);
     setShowMask(false);
-    setBrushMode(null);
     setMaskThreshold(128);
-    setPickingColour(false);
     setValidation(null);
     setImageStats(null);
     setBgStddev(null);
@@ -557,7 +640,8 @@ export default function App() {
 
   // Recompute the crop whenever the anchors or the requested head size change.
   useEffect(() => {
-    if (!image || !anchors) {
+    const px = imagePixels.current;
+    if (!image || !anchors || !px) {
       setCrop(null);
       return;
     }
@@ -565,13 +649,16 @@ export default function App() {
 
     (async () => {
       try {
+        // Working-copy dimensions, not the original's: the anchors came from
+        // detection on that copy, and mixing the two coordinate spaces would
+        // put the crop in the wrong place.
         const result = await ipc.computeCrop({
           chinX: anchors.chin.x,
           chinY: anchors.chin.y,
           crownX: anchors.crown.x,
           crownY: anchors.crown.y,
-          imageWidth: image.naturalWidth,
-          imageHeight: image.naturalHeight,
+          imageWidth: px.w,
+          imageHeight: px.h,
           photoWidthMm: photoWidthMm,
           photoHeightMm: photoHeightMm,
           headHeightMm,
@@ -769,11 +856,7 @@ export default function App() {
 
     if (!replaceBackground || !mask) {
       ctx.putImageData(out, 0, 0);
-      const toned = new Image();
-      toned.onload = () => {
-        if (!cancelled) setComposited(toned);
-      };
-      toned.src = canvas.toDataURL();
+      if (!cancelled) setComposited(canvas);
       return () => {
         cancelled = true;
       };
@@ -816,12 +899,7 @@ export default function App() {
       }
     }
     ctx.putImageData(out, 0, 0);
-
-    const img = new Image();
-    img.onload = () => {
-      if (!cancelled) setComposited(img);
-    };
-    img.src = canvas.toDataURL();
+    if (!cancelled) setComposited(canvas);
 
     return () => {
       cancelled = true;
@@ -869,25 +947,6 @@ export default function App() {
     };
   }, [specId, crop, anchors, detection, rotationDeg, bgStddev, imageStats]);
 
-  /** Apply a suggested correction from the compliance panel. */
-  const onApplyFix = useCallback((fix: ipc.FixHint) => {
-    switch (fix.kind) {
-      case "set_head_height_mm":
-        // Head height is fixed at HEAD_HEIGHT_MM by choice, so this fix is
-        // reported but not applied — silently changing it would contradict
-        // the setting.
-        break;
-      case "set_rotation_deg":
-        // The fix reports the measured tilt; straightening means applying it.
-        setRotationOverride(fix.value);
-        break;
-      case "set_dpi":
-        // Nothing to set directly: the resolution warning is informational,
-        // so surface it rather than silently changing the output size.
-        break;
-    }
-  }, []);
-
   const onAnchorMove = useCallback((which: HandleName, x: number, y: number) => {
     setAnchorOverride((prev) => ({ ...prev, [which]: { x, y } }));
   }, []);
@@ -909,9 +968,11 @@ export default function App() {
    */
   const onCropNudge = useCallback(
     (dx: number, dy: number) => {
-      if (!anchors || !image) return;
-      const clampX = (v: number) => Math.max(0, Math.min(image.naturalWidth, v));
-      const clampY = (v: number) => Math.max(0, Math.min(image.naturalHeight, v));
+      const px = imagePixels.current;
+      if (!anchors || !px) return;
+      // Anchors live in working-copy coordinates, so clamp to those bounds.
+      const clampX = (v: number) => Math.max(0, Math.min(px.w, v));
+      const clampY = (v: number) => Math.max(0, Math.min(px.h, v));
       setAnchorOverride((prev) => ({
         ...prev,
         chin: {
@@ -924,7 +985,7 @@ export default function App() {
         },
       }));
     },
-    [anchors, image],
+    [anchors],
   );
 
   const hasAnyOverride =
@@ -938,7 +999,6 @@ export default function App() {
     try {
       const m = await ipc.segmentBackground(px.data, px.w, px.h);
       setMask(m);
-      setStrokeCount(0);
       setShowMask(true);
       // With a mask available, background uniformity becomes measurable.
       try {
@@ -953,62 +1013,10 @@ export default function App() {
     }
   }, []);
 
-  const onStroke = useCallback(
-    async (points: Array<[number, number]>) => {
-      if (!brushMode || !mask) return;
-      try {
-        // The brush radius is in screen terms; convert to mask pixels so a
-        // stroke covers what the user saw under the cursor.
-        const px = imagePixels.current;
-        const scale = px ? mask.width / px.w : 1;
-        const m = await ipc.addMaskStroke({
-          mode: brushMode,
-          radius: brushRadius * scale,
-          feather: brushRadius * scale * 0.35,
-          points,
-        });
-        setMask(m);
-        setStrokeCount((n) => n + 1);
-      } catch (e) {
-        setError(formatError(e));
-      }
-    },
-    [brushMode, brushRadius, mask],
-  );
-
   const onThresholdChange = async (value: number) => {
     setMaskThreshold(value);
     try {
       setMask(await ipc.setMaskThreshold(value));
-    } catch (e) {
-      setError(formatError(e));
-    }
-  };
-
-  /** Sample a colour from the photo, for matching an existing background. */
-  const onPickColour = useCallback((x: number, y: number) => {
-    const px = imagePixels.current;
-    if (!px) return;
-    const ix = Math.round(Math.max(0, Math.min(px.w - 1, x)));
-    const iy = Math.round(Math.max(0, Math.min(px.h - 1, y)));
-    const i = (iy * px.w + ix) * 4;
-    setBgColour([px.data[i], px.data[i + 1], px.data[i + 2]]);
-    setPickingColour(false);
-  }, []);
-
-  const onUndoStroke = async () => {
-    try {
-      setMask(await ipc.undoMaskStroke());
-      setStrokeCount((n) => Math.max(0, n - 1));
-    } catch (e) {
-      setError(formatError(e));
-    }
-  };
-
-  const onResetMask = async () => {
-    try {
-      setMask(await ipc.resetMaskEdits());
-      setStrokeCount(0);
     } catch (e) {
       setError(formatError(e));
     }
@@ -1055,15 +1063,31 @@ export default function App() {
    */
   const buildPhotoPayload = useCallback((): ipc.PhotoPayload | null => {
     const px = imagePixels.current;
-    if (!px || !crop) return null;
+    if (!px || !crop || !image) return null;
+
+    // Printing is the one place that reads the photograph at full resolution.
+    // Everything on screen works from the reduced copy for speed, but the
+    // print must not inherit that loss, so the original is read here and the
+    // crop — expressed in working-copy pixels — is scaled up to match.
+    const full = document.createElement("canvas");
+    full.width = image.naturalWidth;
+    full.height = image.naturalHeight;
+    const fctx = full.getContext("2d", { willReadFrequently: true });
+    if (!fctx) return null;
+    fctx.drawImage(image, 0, 0);
+    const fullData = fctx.getImageData(0, 0, full.width, full.height).data;
+
+    // One factor for both axes: toWorkingSize scales uniformly.
+    const k = image.naturalWidth / px.w;
+
     return {
-      rgba: px.data,
-      width: px.w,
-      height: px.h,
-      cropX: crop.rect.x,
-      cropY: crop.rect.y,
-      cropWidth: crop.rect.width,
-      cropHeight: crop.rect.height,
+      rgba: fullData,
+      width: full.width,
+      height: full.height,
+      cropX: crop.rect.x * k,
+      cropY: crop.rect.y * k,
+      cropWidth: crop.rect.width * k,
+      cropHeight: crop.rect.height * k,
       rotationDeg,
       background:
         replaceBackground && mask
@@ -1076,7 +1100,7 @@ export default function App() {
           : null,
       adjustments: ipc.isNeutral(adjustments) ? null : adjustments,
     };
-  }, [crop, rotationDeg, replaceBackground, mask, bgColour, adjustments]);
+  }, [crop, image, rotationDeg, replaceBackground, mask, bgColour, adjustments]);
 
   const onPrintSheet = useCallback(async () => {
     if (!selectedPrinter) return;
@@ -1227,10 +1251,15 @@ export default function App() {
           ? crop !== null
           : false;
 
-  const selectedSpec = useMemo(
-    () => specs.find((s) => s.id === specId) ?? null,
-    [specs, specId],
-  );
+  /** Tighten or loosen the crop by one step. */
+  const onCropZoom = useCallback((direction: 1 | -1) => {
+    setHeadHeightMm((mm) =>
+      Math.min(
+        HEAD_HEIGHT_MAX_MM,
+        Math.max(HEAD_HEIGHT_MIN_MM, mm + direction * HEAD_HEIGHT_STEP_MM),
+      ),
+    );
+  }, []);
 
   /** Print, then return to the start ready for the next person. */
   const onPrintAndFinish = async () => {
@@ -1242,40 +1271,47 @@ export default function App() {
 
   return (
     <main className="app">
+      {/* A menu bar rather than a title row: Settings belongs where an
+          application's menus live, not buried in the print step. */}
       <header className="app-header">
-        <h1>{t("app.title")}</h1>
-        <div className="header-actions">
-          {step === STEP_EDIT && (
-            <>
-              <button
-                type="button"
-                className="small"
-                disabled={!canUndo(history)}
-                onClick={onUndo}
-                title={t("edit.undo_hint")}
-              >
-                ↶ {t("edit.undo")}
-              </button>
-              <button
-                type="button"
-                className="small"
-                disabled={!canRedo(history)}
-                onClick={onRedo}
-                title={t("edit.undo_hint")}
-              >
-                ↷ {t("edit.redo")}
-              </button>
-            </>
-          )}
-          {image && (
-            <button type="button" className="small" onClick={startOver}>
-              {t("wizard.start_over")}
-            </button>
-          )}
+        <div className="menubar">
+          <button type="button" className="menubar-item" onClick={() => setSettingsOpen(true)}>
+            {t("settings.open")}
+          </button>
+          <button
+            type="button"
+            className="menubar-item"
+            disabled={!image}
+            onClick={startOver}
+          >
+            {t("wizard.start_over")}
+          </button>
+          <span className="menubar-gap" />
+          <button
+            type="button"
+            className="menubar-item"
+            disabled={step !== STEP_EDIT || !canUndo(history)}
+            onClick={onUndo}
+            title={t("edit.undo_hint")}
+          >
+            ↶ {t("edit.undo")}
+          </button>
+          <button
+            type="button"
+            className="menubar-item"
+            disabled={step !== STEP_EDIT || !canRedo(history)}
+            onClick={onRedo}
+            title={t("edit.undo_hint")}
+          >
+            ↷ {t("edit.redo")}
+          </button>
         </div>
+        <h1>{t("app.title")}</h1>
       </header>
 
-      <StepBar current={step} onGoTo={setStep} />
+      {/* The editor needs every pixel of height it can get, and the step is
+          already obvious from what is on screen. */}
+      {step !== STEP_EDIT && <StepBar current={step} onGoTo={setStep} />}
 
       {step === STEP_PICK && (
         <div className="step-pane step-pane-narrow">
@@ -1289,7 +1325,6 @@ export default function App() {
       {step === STEP_FORMAT && (
         <div className="step-pane step-pane-narrow">
           <FormatPicker specs={specs} selectedId={specId} onSelect={onSelectSpec} />
-          {specId !== "" && <p className="hint">{t("spec.chin_line_note")}</p>}
           {error && <div className="error">{error}</div>}
         </div>
       )}
@@ -1384,6 +1419,34 @@ export default function App() {
             {t("settings.turn_photo")}
           </label>
           <p className="hint">{t("settings.turn_photo_hint")}</p>
+
+          {/* Applied live so the effect is visible while choosing, and saved
+              with the rest of the settings. */}
+          <Stepper
+            label={t("settings.font_scale")}
+            value={fontScale}
+            step={10}
+            min={FONT_SCALE_MIN}
+            max={FONT_SCALE_MAX}
+            decimals={0}
+            unit=" %"
+            isAuto={fontScale === 100}
+            onChange={setFontScale}
+            onReset={() => setFontScale(100)}
+          />
+          <p className="hint">{t("settings.font_scale_hint")}</p>
+
+          {/* Takes effect on the next start: resizing the window now would be
+              a surprise while the user is in a dialog. */}
+          <label className="checkbox">
+            <input
+              type="checkbox"
+              checked={startMaximized}
+              onChange={(e) => setStartMaximized(e.target.checked)}
+            />
+            {t("settings.start_maximized")}
+          </label>
+          <p className="hint">{t("settings.start_maximized_hint")}</p>
 
           <label>
             {t("format.count")}
@@ -1591,81 +1654,45 @@ export default function App() {
         hidden={step !== STEP_EDIT && step !== STEP_PRINT}
       >
         <section className="panel editor-photo" hidden={step !== STEP_EDIT}>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="image/*"
-            style={{ display: "none" }}
-            onChange={(e) => {
-              const f = e.target.files?.[0];
-              if (f) void onPickImage(f);
-              e.target.value = "";
-            }}
-          />
-
-          {selectedSpec && (
-            <p className="hint">
-              {t("editor.locked_ratio", {
-                width: formatMm(selectedSpec.widthMm, 0),
-                height: formatMm(selectedSpec.heightMm, 0),
-              })}
-            </p>
-          )}
-
           {image && (
             <>
-              <PhotoCanvas
-                image={image}
-                detection={detection}
-                anchors={anchors}
-                crop={crop}
-                rotationDeg={rotationDeg}
-                mask={mask}
-                showMask={showMask}
-                brush={brushMode ? { mode: brushMode, radius: brushRadius } : null}
-                onStroke={onStroke}
-                onPickColour={pickingColour ? onPickColour : null}
-                onAnchorMove={onAnchorMove}
-                onCropNudge={onCropNudge}
-              />
-
-              <div className="row">
-                <button type="button" onClick={() => fileInputRef.current?.click()}>
-                  {t("face.load_image")}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => image && void runDetection(image)}
-                  disabled={detecting}
-                >
-                  {detecting ? t("face.detecting") : t("face.detect")}
-                </button>
+              {/* Fixed 3:2 stage, so the panel does not resize with the photo
+                  and shift every control below it. */}
+              <div className="editor-stage">
+                <PhotoCanvas
+                  image={working?.canvas ?? null}
+                  detection={detection}
+                  anchors={anchors}
+                  crop={crop}
+                  rotationDeg={rotationDeg}
+                  mask={mask}
+                  showMask={showMask}
+                  onAnchorMove={onAnchorMove}
+                  onCropNudge={onCropNudge}
+                />
               </div>
-
-              {detection && (
-                <div className="info">
-                  <div>
-                    {t("face.found", {
-                      confidence: Math.round(detection.confidence * 100),
-                    })}
-                  </div>
-                  <div>{t("face.roll", { deg: formatMm(detection.rollDeg, 1) })}</div>
-                  <div>
-                    {t("face.eye_distance", { px: Math.round(detection.eyeDistancePx) })}
-                  </div>
-                  {crop && (
-                    <div>
-                      {t("face.max_dpi", { dpi: Math.round(crop.maxLosslessDpi) })}
-                    </div>
-                  )}
-                </div>
-              )}
             </>
           )}
         </section>
 
-        {/* Controls sit in their own column so the photo stays large and the
-            two scroll independently rather than as one long page. */}
+        {/* The finished photo gets a column of its own, between the canvas it
+            comes from and the controls that shape it. */}
+        <section className="panel editor-preview" hidden={step !== STEP_EDIT}>
+          {image && (
+            <PhotoPreview
+              image={composited ?? working?.canvas ?? null}
+              crop={crop}
+              rotationDeg={rotationDeg}
+              widthMm={photoWidthMm}
+              heightMm={photoHeightMm}
+              maxEdgePx={340}
+              onZoom={onCropZoom}
+              canZoomIn={headHeightMm < HEAD_HEIGHT_MAX_MM}
+              canZoomOut={headHeightMm > HEAD_HEIGHT_MIN_MM}
+            />
+          )}
+        </section>
+
         <section className="panel editor-controls" hidden={step !== STEP_EDIT}>
           {image && (
             <>
@@ -1673,47 +1700,26 @@ export default function App() {
                 <>
                   <Section
                     title={t("editor.group_crop")}
-                    defaultOpen
                     badge={hasAnyOverride ? t("face.reset") : null}
                   >
-                  <label>
-                    <span className="label-row">
-                      {t("face.rotation")}
-                      {rotationOverride === null && (
-                        <span className="badge">{t("face.auto")}</span>
-                      )}
-                    </span>
-                    <div className="row">
-                      <input
-                        type="range"
-                        min={-15}
-                        max={15}
-                        step={0.1}
-                        value={rotationDeg}
-                        onChange={(e) => setRotationOverride(Number(e.target.value))}
-                      />
-                      <span className="numeric">{formatMm(rotationDeg, 1)}°</span>
-                      <button
-                        type="button"
-                        className="small"
-                        disabled={rotationOverride === null}
-                        onClick={() => setRotationOverride(null)}
-                      >
-                        {t("face.reset")}
-                      </button>
-                    </div>
-                  </label>
+                  <Stepper
+                    label={t("face.rotation")}
+                    value={rotationDeg}
+                    step={0.1}
+                    min={-15}
+                    max={15}
+                    decimals={1}
+                    unit="°"
+                    isAuto={rotationOverride === null}
+                    onChange={setRotationOverride}
+                    onReset={() => setRotationOverride(null)}
+                  />
 
-                  <p className="hint">{t("face.drag_hint")}</p>
-
+                  {/* The drag instruction is a tooltip rather than a
+                      paragraph: useful once, then permanent clutter. */}
                   {(["crown", "chin", "rightEye", "leftEye"] as const).map((name) => (
-                    <div className="row" key={name}>
-                      <span className="anchor-label">
-                        {t(`face.${name}`)}
-                        {!anchorOverride[name] && (
-                          <span className="badge">{t("face.auto")}</span>
-                        )}
-                      </span>
+                    <div className="row" key={name} title={t("face.drag_hint")}>
+                      <span className="anchor-label">{t(`face.${name}`)}</span>
                       <button
                         type="button"
                         className="small"
@@ -1749,23 +1755,16 @@ export default function App() {
                       ["adjust.tint", tint, setTint, -1, 1, 0.05],
                     ] as const
                   ).map(([key, value, setter, min, max, step]) => (
-                    <label key={key}>
-                      <span className="label-row">
-                        {t(key)}
-                        {value === 0 && <span className="badge">{t("face.auto")}</span>}
-                      </span>
-                      <div className="row">
-                        <input
-                          type="range"
-                          min={min}
-                          max={max}
-                          step={step}
-                          value={value}
-                          onChange={(e) => setter(Number(e.target.value))}
-                        />
-                        <span className="numeric">{formatMm(value, 2)}</span>
-                      </div>
-                    </label>
+                    <Stepper
+                      key={key}
+                      label={t(key)}
+                      value={value}
+                      step={step}
+                      min={min}
+                      max={max}
+                      isAuto={value === 0}
+                      onChange={setter}
+                    />
                   ))}
                   <button
                     type="button"
@@ -1823,6 +1822,8 @@ export default function App() {
                         {t("bg.show_mask")}
                       </label>
 
+                      {/* White is the offered default; the swatch stays so any
+                          other colour can still be chosen. */}
                       <label>
                         {t("bg.colour")}
                         <div className="row">
@@ -1842,21 +1843,6 @@ export default function App() {
                           />
                           <button
                             type="button"
-                            className={`small ${pickingColour ? "active" : ""}`}
-                            onClick={() => setPickingColour(!pickingColour)}
-                            title={t("bg.eyedropper_hint")}
-                          >
-                            {t("bg.eyedropper")}
-                          </button>
-                          <button
-                            type="button"
-                            className="small"
-                            onClick={() => setBgColour([235, 235, 235])}
-                          >
-                            {t("bg.colour_grey")}
-                          </button>
-                          <button
-                            type="button"
                             className="small"
                             onClick={() => setBgColour([255, 255, 255])}
                           >
@@ -1866,19 +1852,16 @@ export default function App() {
                       </label>
 
                       <label>
-                        <span className="label-row">
-                          {t("bg.threshold")}
-                          {maskThreshold === 128 && (
-                            <span className="badge">{t("face.auto")}</span>
-                          )}
-                        </span>
+                        <span className="label-row">{t("bg.threshold")}</span>
                         <div className="row">
                           <input
                             type="range"
                             min={40}
                             max={220}
                             value={maskThreshold}
-                            onChange={(e) => void onThresholdChange(Number(e.target.value))}
+                            onChange={(e) =>
+                              void onThresholdChange(Number(e.target.value))
+                            }
                           />
                           <span className="numeric">{maskThreshold}</span>
                           <button
@@ -1890,85 +1873,10 @@ export default function App() {
                             {t("face.reset")}
                           </button>
                         </div>
-                        <p className="hint">{t("bg.threshold_hint")}</p>
                       </label>
-
-                      <label>
-                        {t("bg.brush")}
-                        <div className="row">
-                          <button
-                            type="button"
-                            className={`small ${brushMode === "keep" ? "active" : ""}`}
-                            onClick={() =>
-                              setBrushMode(brushMode === "keep" ? null : "keep")
-                            }
-                          >
-                            {t("bg.brush_keep")}
-                          </button>
-                          <button
-                            type="button"
-                            className={`small ${brushMode === "erase" ? "active" : ""}`}
-                            onClick={() =>
-                              setBrushMode(brushMode === "erase" ? null : "erase")
-                            }
-                          >
-                            {t("bg.brush_erase")}
-                          </button>
-                        </div>
-                      </label>
-
-                      {brushMode && (
-                        <>
-                          <label>
-                            {t("bg.brush_size")}
-                            <div className="row">
-                              <input
-                                type="range"
-                                min={4}
-                                max={80}
-                                value={brushRadius}
-                                onChange={(e) => setBrushRadius(Number(e.target.value))}
-                              />
-                              <span className="numeric">{brushRadius}</span>
-                            </div>
-                          </label>
-                          <p className="hint">{t("bg.brush_hint")}</p>
-                        </>
-                      )}
-
-                      <div className="row">
-                        <button
-                          type="button"
-                          className="small"
-                          disabled={strokeCount === 0}
-                          onClick={() => void onUndoStroke()}
-                        >
-                          {t("bg.undo")}
-                        </button>
-                        <button
-                          type="button"
-                          className="small"
-                          disabled={strokeCount === 0}
-                          onClick={() => void onResetMask()}
-                        >
-                          {t("bg.reset")}
-                        </button>
-                      </div>
                     </>
                   )}
                   </Section>
-
-                  {/* Compliance sits with the editing controls, where the
-                      corrections it suggests can be applied immediately. */}
-                  {specId !== "" && validation && (
-                    <Section
-                      title={t("editor.group_checks")}
-                      defaultOpen
-                      badge={validation.blocking ? "❌" : "✅"}
-                    >
-                      <CompliancePanel validation={validation} onApplyFix={onApplyFix} />
-                    </Section>
-                  )}
                 </>
               )}
 
@@ -1998,7 +1906,6 @@ export default function App() {
 
         <section className="panel preview-panel" hidden={step !== STEP_PRINT}>
           <h2>{t("preview.sheet")}</h2>
-          <p className="hint">{t("print.review")}</p>
 
           <SheetPreview
             layout={mixedMode ? mixedLayout : layout}
@@ -2015,7 +1922,7 @@ export default function App() {
                 : undefined
             }
             showCutMarks={cutMarks}
-            image={composited ?? image}
+            image={composited ?? working?.canvas ?? null}
             crop={crop}
             rotationDeg={rotationDeg}
             turnPhoto={turnPhoto}
@@ -2119,10 +2026,6 @@ export default function App() {
           >
             {t("print.button")}
           </button>
-
-          <button type="button" onClick={() => setSettingsOpen(true)}>
-            {t("settings.open")}
-          </button>
         </section>
       </div>
 
@@ -2154,8 +2057,6 @@ export default function App() {
           </button>
         </nav>
       )}
-
-      <footer className="disclaimer">{t("disclaimer")}</footer>
     </main>
   );
 }

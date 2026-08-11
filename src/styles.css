@@ -1,4 +1,4 @@
-/* System fonts only: no CDN, nothing fetched at runtime. */
+﻿/* System fonts only: no CDN, nothing fetched at runtime. */
 :root {
   --bg: #f5f6f8;
   --panel: #ffffff;
@@ -8,6 +8,11 @@
   --accent: #2f6f4f;
   --error: #a03030;
   font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+  /*
+    The base every other size is relative to. Text sizes below are in `em`, so
+    the settings dialog can scale the whole interface's type by overriding this
+    one value — without touching photos, canvases or layout dimensions.
+  */
   font-size: 14px;
   color: var(--text);
 }
@@ -16,29 +21,76 @@
   box-sizing: border-box;
 }
 
+/*
+  The window itself never scrolls: the header, step bar and navigation stay
+  put, and only the panes that need it scroll internally. Anything that cannot
+  fit is a layout bug to fix rather than something to push below the fold.
+*/
+html,
+body {
+  height: 100%;
+  overflow: hidden;
+}
+
 body {
   margin: 0;
   background: var(--bg);
 }
 
 .app {
-  padding: 20px 24px 32px;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  padding: 20px 24px 16px;
   max-width: 1400px;
   margin: 0 auto;
+  overflow: hidden;
 }
 
 h1 {
-  font-size: 20px;
+  font-size: 1.429em;
   font-weight: 600;
   margin: 0;
 }
 
 .app-header {
+  margin-bottom: 18px;
+}
+
+/* Where an application's menus belong: always present, above everything. */
+.menubar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 18px;
+  gap: 2px;
+  margin: -20px -24px 14px;
+  padding: 4px 12px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+
+.menubar-gap {
+  flex: 1;
+}
+
+.menubar-item {
+  width: auto;
+  padding: 5px 12px;
+  background: none;
+  border: none;
+  border-radius: 4px;
+  font-size: 0.929em;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.menubar-item:hover:not(:disabled) {
+  background: var(--bg);
+}
+
+.menubar-item:disabled {
+  color: var(--muted);
+  opacity: 0.5;
+  cursor: default;
 }
 
 .header-actions {
@@ -47,7 +99,7 @@ h1 {
 }
 
 h2 {
-  font-size: 13px;
+  font-size: 0.929em;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -63,32 +115,198 @@ h2:first-child {
   display: grid;
   gap: 18px;
   align-items: start;
-}
-
-/* Step 3: photo on the left, its controls on the right. */
-.columns-edit {
-  grid-template-columns: minmax(0, 1fr) 340px;
+  /* Take the space the header and navigation leave, and no more. */
+  flex: 1;
+  min-height: 0;
 }
 
 /*
-  The app fills the window and only the inner panes scroll, so the header, the
-  step bar and the navigation stay put. 100vh minus their heights.
+  Step 3, three panels side by side: the canvas being edited, the finished
+  photo, and the controls. Each is its own column so none of them stretches
+  into space it does not need.
 */
+/* The middle column gives up width so the controls can carry a larger font
+   without wrapping. The left column is untouched. */
+.columns-edit {
+  grid-template-columns: 420px minmax(0, 1fr) 440px;
+}
+
+/* All three panels run the full height of the row, so their bottom edges line
+   up rather than each stopping wherever its content happens to end. */
+.columns-edit > .panel {
+  height: 100%;
+}
+
 .editor-photo,
+.editor-preview {
+  max-height: 100%;
+  overflow: hidden;
+}
+
+.editor-preview {
+  display: flex;
+  flex-direction: column;
+}
+
+/* Only the controls are long enough to need scrolling. */
 .editor-controls {
-  max-height: calc(100vh - 260px);
+  max-height: 100%;
   overflow-y: auto;
 }
 
+@media (max-width: 1500px) {
+  .columns-edit {
+    grid-template-columns: 340px minmax(0, 1fr) 320px;
+  }
+}
+
+/*
+  The stage fills its column and the photo fills the stage. An earlier fixed
+  3:2 frame kept the layout from shifting, but the grid column already does
+  that, and the fixed ratio left wide empty bands beside an upright photo.
+*/
 .editor-photo {
   display: flex;
   flex-direction: column;
   align-items: center;
 }
 
-/* Step 4 shows sheet settings, the preview and the printer side by side. */
+/*
+  Fills its column. No fixed ratio: the grid column already keeps the layout
+  from shifting, and forcing 3:2 left wide empty bands beside an upright photo.
+*/
+.editor-stage {
+  width: 100%;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+/* Fills the stage and is measured by PhotoCanvas to size the photo. */
+.photo-canvas-wrap {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.editor-stage canvas {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+/*
+  The finished photo fills its own panel: it is the thing being judged, so it
+  reads better large than as a thumbnail beside the controls.
+*/
+.photo-preview {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+
+.photo-preview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+}
+
+.photo-preview-label {
+  font-size: 0.857em;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+/* Below the photo, in the space the panel has spare. */
+.photo-preview-zoom {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding-top: 4px;
+}
+
+.zoom-button {
+  width: 92px;
+  min-width: 92px;
+  height: 92px;
+  padding: 0;
+  font-size: 44px;
+  font-weight: 400;
+  line-height: 1;
+  color: #fff;
+  border: none;
+}
+
+/* Green grows the head, red shrinks it — the same reading as anywhere else. */
+.zoom-button-in {
+  background: var(--accent);
+}
+
+.zoom-button-in:hover:not(:disabled) {
+  background: #275c42;
+}
+
+.zoom-button-out {
+  background: var(--error);
+}
+
+.zoom-button-out:hover:not(:disabled) {
+  background: #8a2828;
+}
+
+.zoom-button:disabled {
+  background: var(--border);
+  color: var(--muted);
+}
+
+.photo-preview-viewport {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.photo-preview-canvas {
+  flex: none;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border: 1px solid var(--border);
+  background: #fff;
+}
+
+/* Step 4 shows the sheet preview and the printer side by side. */
 .columns-print {
-  grid-template-columns: 260px minmax(0, 1fr) 300px;
+  grid-template-columns: minmax(0, 1fr) 320px;
+}
+
+/*
+  Stretch rather than sit at their natural height: the sheet preview scales to
+  the room it is given, so a panel that stopped short left the preview small
+  with empty space under it.
+*/
+.columns-print > .panel {
+  height: 100%;
+  max-height: 100%;
+  overflow-y: auto;
 }
 
 /*
@@ -119,13 +337,24 @@ h2:first-child {
   flex-direction: column;
   align-items: center;
   gap: 14px;
+  min-height: 0;
+}
+
+/* Scales to fit rather than scrolling, so the whole sheet is always in view.
+   Overrides the scrolling the other print-step panels want. */
+.columns-print > .preview-panel {
+  overflow: hidden;
+}
+
+.sheet-preview {
+  max-height: 100%;
 }
 
 label {
   display: block;
   margin-bottom: 12px;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 0.857em;
 }
 
 label.checkbox {
@@ -133,7 +362,7 @@ label.checkbox {
   align-items: center;
   gap: 8px;
   color: var(--text);
-  font-size: 13px;
+  font-size: 0.929em;
 }
 
 input[type="number"],
@@ -148,7 +377,7 @@ select {
   background: #fff;
   color: var(--text);
   font: inherit;
-  font-size: 13px;
+  font-size: 0.929em;
 }
 
 label.checkbox input[type="checkbox"] {
@@ -171,7 +400,7 @@ button {
   background: #fff;
   color: var(--text);
   font: inherit;
-  font-size: 13px;
+  font-size: 0.929em;
   cursor: pointer;
 }
 
@@ -225,7 +454,7 @@ button:disabled {
 button.small {
   width: auto;
   padding: 4px 10px;
-  font-size: 12px;
+  font-size: 0.857em;
   margin-bottom: 0;
 }
 
@@ -240,7 +469,7 @@ button.small {
   align-items: center;
   gap: 6px;
   flex: 1;
-  font-size: 13px;
+  font-size: 0.929em;
 }
 
 /* --- Wizard --- */
@@ -260,7 +489,7 @@ button.small {
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 6px;
-  font-size: 13px;
+  font-size: 0.929em;
   color: var(--muted);
   text-align: left;
   cursor: default;
@@ -292,7 +521,7 @@ button.small {
   border-radius: 50%;
   background: var(--bg);
   border: 1px solid var(--border);
-  font-size: 12px;
+  font-size: 0.857em;
 }
 
 .step-active .step-number {
@@ -307,11 +536,18 @@ button.small {
   color: #fff;
 }
 
+/*
+  Sits below the scrolling area rather than inside it, so Back and Next hold
+  one position regardless of how tall a step's content is.
+*/
 .wizard-nav {
+  flex: none;
   display: flex;
   justify-content: space-between;
   gap: 12px;
-  margin-top: 20px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
 }
 
 .wizard-nav button {
@@ -319,8 +555,15 @@ button.small {
   width: auto;
 }
 
-/* A step that is not the three-column editor gets a narrower, centred pane. */
+/*
+  A step that is not the three-column editor gets a narrower, centred pane.
+  It takes the height the header and navigation leave and scrolls internally,
+  so the page itself never does.
+*/
 .step-pane {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -330,6 +573,7 @@ button.small {
 .step-pane-narrow {
   max-width: 760px;
   margin: 0 auto;
+  width: 100%;
 }
 
 /* --- Step 1: drop zone --- */
@@ -360,14 +604,14 @@ button.small {
 
 .dropzone-title {
   margin: 0;
-  font-size: 17px;
+  font-size: 1.214em;
   font-weight: 600;
 }
 
 .dropzone-or {
   margin: 0;
   color: var(--muted);
-  font-size: 13px;
+  font-size: 0.929em;
 }
 
 .dropzone button {
@@ -389,7 +633,7 @@ button.small {
 }
 
 .format-group-title {
-  font-size: 12px;
+  font-size: 0.857em;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -426,7 +670,7 @@ button.small {
   min-width: 108px;
   font-variant-numeric: tabular-nums;
   font-weight: 600;
-  font-size: 15px;
+  font-size: 1.071em;
 }
 
 .format-card-body {
@@ -436,16 +680,16 @@ button.small {
 }
 
 .format-card-name {
-  font-size: 14px;
+  font-size: 1em;
 }
 
 .format-card-detail {
-  font-size: 12px;
+  font-size: 0.857em;
   color: var(--muted);
 }
 
 .format-card-warning {
-  font-size: 12px;
+  font-size: 0.857em;
   color: #8a6d1f;
 }
 
@@ -483,7 +727,7 @@ button.small {
 
 .modal-header h2 {
   margin: 0;
-  font-size: 15px;
+  font-size: 1.071em;
   text-transform: none;
   letter-spacing: 0;
   color: var(--text);
@@ -512,7 +756,7 @@ button.small {
   border: none;
   border-bottom: 2px solid transparent;
   border-radius: 0;
-  font-size: 13px;
+  font-size: 0.929em;
   color: var(--muted);
   cursor: pointer;
 }
@@ -562,22 +806,11 @@ button.small {
   align-items: center;
   gap: 8px;
   width: 100%;
-  padding: 10px 12px;
-  background: none;
-  border: none;
-  font-size: 13px;
+  margin: 0;
+  padding: 13px 16px;
+  font-size: 1.357em;
   font-weight: 600;
   text-align: left;
-  cursor: pointer;
-}
-
-.edit-section-header:hover {
-  background: var(--bg);
-}
-
-.edit-section-chevron {
-  color: var(--muted);
-  font-size: 11px;
 }
 
 .edit-section-title {
@@ -585,8 +818,104 @@ button.small {
 }
 
 .edit-section-body {
-  padding: 4px 12px 12px;
+  padding: 12px 16px 16px;
   border-top: 1px solid var(--border);
+  font-size: 1.143em;
+}
+
+/*
+  A named value with a button either side, replacing the sliders these controls
+  used to be: one press per step lands exactly on a value, where a slider
+  needed a careful drag.
+*/
+.stepper {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.stepper-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  font-size: 1.143em;
+  color: var(--text);
+}
+
+.stepper-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+}
+
+.stepper-button {
+  width: 36px;
+  min-width: 36px;
+  height: 36px;
+  padding: 0;
+  font-size: 21px;
+  font-weight: 500;
+  line-height: 1;
+  color: #fff;
+  border: none;
+}
+
+.stepper-button-up {
+  background: var(--accent);
+}
+
+.stepper-button-up:hover:not(:disabled) {
+  background: #275c42;
+}
+
+.stepper-button-down {
+  background: var(--error);
+}
+
+.stepper-button-down:hover:not(:disabled) {
+  background: #8a2828;
+}
+
+/* Grey rather than tinted when at the limit, so a disabled button does not
+   read as an active one. */
+.stepper-button:disabled {
+  background: var(--border);
+  color: var(--muted);
+}
+
+/* Tabular figures so the number does not jitter as it changes. */
+.stepper-value {
+  min-width: 58px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+.stepper-reset {
+  width: auto;
+  margin-left: 4px;
+}
+
+/* Controls inside the groups follow the larger body text. */
+.edit-section-body label,
+.edit-section-body .anchor-label,
+.edit-section-body .numeric,
+.edit-section-body button {
+  font-size: 1.143em;
+}
+
+/* Anchor names read as labels, not as muted secondary text. */
+.edit-section-body .anchor-label {
+  color: var(--text);
+}
+
+.edit-section-body .hint {
+  font-size: 1em;
 }
 
 /* One format in the mixed sheet: a label above its width/height/count inputs. */
@@ -606,7 +935,7 @@ button.small {
   min-width: 46px;
   text-align: right;
   font-variant-numeric: tabular-nums;
-  font-size: 12px;
+  font-size: 0.857em;
   color: var(--muted);
 }
 
@@ -622,14 +951,19 @@ input[type="range"] {
   border-radius: 3px;
   background: #e6a03c;
   color: #3a2a10;
-  font-size: 10px;
+  font-size: 0.714em;
   font-weight: 700;
   letter-spacing: 0.04em;
 }
 
+/* Takes the height the panel has left, which SheetPreview measures to scale
+   the sheet so every row is visible. */
 .sheet-preview-wrap {
   width: 100%;
+  flex: 1;
+  min-height: 0;
   display: flex;
+  align-items: center;
   justify-content: center;
   overflow: hidden;
 }
@@ -642,21 +976,21 @@ input[type="range"] {
 }
 
 .info {
-  font-size: 12px;
+  font-size: 0.857em;
   color: var(--muted);
   line-height: 1.6;
   width: 100%;
 }
 
 .hint {
-  font-size: 12px;
+  font-size: 0.857em;
   color: var(--muted);
   line-height: 1.5;
   margin: 0 0 10px;
 }
 
 .error {
-  font-size: 12px;
+  font-size: 0.857em;
   color: var(--error);
   background: #fdf0f0;
   border: 1px solid #f0d0d0;
@@ -667,7 +1001,7 @@ input[type="range"] {
 }
 
 .status {
-  font-size: 12px;
+  font-size: 0.857em;
   color: var(--accent);
   line-height: 1.5;
 }
@@ -678,7 +1012,7 @@ input[type="range"] {
 }
 
 .compliance h3 {
-  font-size: 11px;
+  font-size: 0.786em;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -701,7 +1035,7 @@ input[type="range"] {
   gap: 8px;
   align-items: flex-start;
   padding: 5px 0;
-  font-size: 12px;
+  font-size: 0.857em;
   line-height: 1.45;
   border-bottom: 1px solid #eef0f2;
 }
@@ -733,16 +1067,8 @@ input[type="range"] {
   margin: 14px 0 0;
   padding-top: 10px;
   border-top: 1px solid var(--border);
-  font-size: 11px;
+  font-size: 0.786em;
   color: var(--muted);
   line-height: 1.5;
 }
 
-.disclaimer {
-  margin-top: 24px;
-  padding-top: 14px;
-  border-top: 1px solid var(--border);
-  font-size: 11px;
-  color: var(--muted);
-  line-height: 1.5;
-}

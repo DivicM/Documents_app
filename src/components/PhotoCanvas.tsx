@@ -12,7 +12,11 @@ export interface Anchors {
 export type HandleName = keyof Anchors;
 
 interface Props {
-  image: HTMLImageElement | null;
+  /**
+   * The working copy, as a canvas. Its dimensions are the coordinate space the
+   * anchors and crop are expressed in, so it must not be the original image.
+   */
+  image: HTMLCanvasElement | null;
   detection: FaceDetection | null;
   anchors: Anchors | null;
   crop: CropResult | null;
@@ -22,12 +26,6 @@ interface Props {
   mask?: { width: number; height: number; data: Uint8Array } | null;
   /** Whether the mask tint is shown. */
   showMask?: boolean;
-  /** Active brush; when set, dragging paints instead of moving the crop. */
-  brush?: { mode: "keep" | "erase"; radius: number } | null;
-  /** Called with a completed stroke, in mask coordinates. */
-  onStroke?: (points: Array<[number, number]>) => void;
-  /** When set, a click samples a colour instead of editing. */
-  onPickColour?: ((x: number, y: number) => void) | null;
   /** Called while dragging, in source-image pixels. */
   onAnchorMove: (which: HandleName, x: number, y: number) => void;
   /** Called while dragging the crop itself, with the offset in source pixels. */
@@ -53,20 +51,24 @@ export function PhotoCanvas({
   rotationDeg = 0,
   mask,
   showMask = false,
-  brush = null,
-  onStroke,
-  onPickColour = null,
   onAnchorMove,
   onCropNudge,
   maxWidthPx = 520,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const wrapRef = useRef<HTMLDivElement>(null);
+  /**
+   * Space the surrounding stage actually offers.
+   *
+   * Measured rather than assumed: the stage grows with the window, and a fixed
+   * width would leave the photo small on a large screen, making the anchor
+   * handles fiddly to drag.
+   */
+  const [avail, setAvail] = useState({ w: maxWidthPx, h: maxWidthPx });
   const [dragging, setDragging] = useState<Handle>(null);
   /** Set while dragging the crop body; holds the last pointer position. */
   const cropDrag = useRef<{ x: number; y: number } | null>(null);
   const [cursor, setCursor] = useState("crosshair");
-  /** Points of the stroke currently being drawn, in mask coordinates. */
-  const strokePoints = useRef<Array<[number, number]> | null>(null);
   /** Mask rendered once into an offscreen canvas, rather than per frame. */
   const maskCanvas = useRef<HTMLCanvasElement | null>(null);
 
@@ -96,8 +98,24 @@ export function PhotoCanvas({
     maskCanvas.current = off;
   }, [mask]);
 
-  // Scale from source pixels to canvas pixels.
-  const scale = image ? Math.min(maxWidthPx / image.width, 1) : 1;
+  // Track the stage's size so the photo fills it.
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return;
+    const observer = new ResizeObserver((entries) => {
+      const r = entries[0]?.contentRect;
+      if (r && r.width > 0 && r.height > 0) setAvail({ w: r.width, h: r.height });
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  // Scale from source pixels to canvas pixels: fit both axes, and allow
+  // enlarging a small photo so the handles stay easy to grab. Capped at 2x,
+  // beyond which the interpolation is more distracting than helpful.
+  const scale = image
+    ? Math.min(avail.w / image.width, avail.h / image.height, 2)
+    : 1;
 
   const toCanvas = useCallback((v: number) => v * scale, [scale]);
   const toSource = useCallback((v: number) => v / scale, [scale]);
@@ -240,35 +258,8 @@ export function PhotoCanvas({
     );
   };
 
-  /** Canvas position to mask coordinates. */
-  const toMask = (x: number, y: number): [number, number] | null => {
-    if (!image || !mask) return null;
-    return [
-      (toSource(x) / image.width) * mask.width,
-      (toSource(y) / image.height) * mask.height,
-    ];
-  };
-
   const onPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const { x, y } = pointerPos(e);
-
-    // The eyedropper consumes the click outright, so a stray drag cannot move
-    // an anchor while the user is only sampling a colour.
-    if (onPickColour) {
-      onPickColour(toSource(x), toSource(y));
-      return;
-    }
-
-    // Painting takes priority: with a brush selected the user is editing the
-    // mask, not repositioning the crop.
-    if (brush && mask && onStroke) {
-      const p = toMask(x, y);
-      if (p) {
-        strokePoints.current = [p];
-        e.currentTarget.setPointerCapture(e.pointerId);
-      }
-      return;
-    }
 
     const hit = hitTest(x, y);
     if (hit) {
@@ -288,12 +279,6 @@ export function PhotoCanvas({
     if (!image) return;
     const { x, y } = pointerPos(e);
 
-    if (strokePoints.current) {
-      const p = toMask(x, y);
-      if (p) strokePoints.current.push(p);
-      return;
-    }
-
     if (dragging) {
       // Clamp to the image: an anchor outside it has no meaning.
       const sx = Math.max(0, Math.min(image.width, toSource(x)));
@@ -311,23 +296,12 @@ export function PhotoCanvas({
     }
 
     // Hover feedback, so the draggable regions are discoverable.
-    if (onPickColour) setCursor("copy");
-    else if (brush) setCursor("cell");
-    else if (hitTest(x, y)) setCursor("grab");
+    if (hitTest(x, y)) setCursor("grab");
     else if (onCropNudge && insideCrop(x, y)) setCursor("move");
     else setCursor("crosshair");
   };
 
   const endDrag = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    // A stroke is sent once on release, not per pointer event: each one costs
-    // a full mask recomputation.
-    if (strokePoints.current) {
-      const points = strokePoints.current;
-      strokePoints.current = null;
-      e.currentTarget.releasePointerCapture(e.pointerId);
-      if (points.length > 0) onStroke?.(points);
-      return;
-    }
     if (dragging || cropDrag.current) {
       e.currentTarget.releasePointerCapture(e.pointerId);
       setDragging(null);
@@ -335,17 +309,21 @@ export function PhotoCanvas({
     }
   };
 
-  if (!image) return null;
-
+  // The wrapper is measured even before an image loads, so the first render
+  // with a photo already knows how much room it has.
   return (
-    <canvas
-      ref={canvasRef}
-      className="photo-canvas"
-      style={{ cursor: dragging || cropDrag.current ? "grabbing" : cursor }}
-      onPointerDown={onPointerDown}
-      onPointerMove={onPointerMove}
-      onPointerUp={endDrag}
-      onPointerCancel={endDrag}
-    />
+    <div ref={wrapRef} className="photo-canvas-wrap">
+      {image && (
+        <canvas
+          ref={canvasRef}
+          className="photo-canvas"
+          style={{ cursor: dragging || cropDrag.current ? "grabbing" : cursor }}
+          onPointerDown={onPointerDown}
+          onPointerMove={onPointerMove}
+          onPointerUp={endDrag}
+          onPointerCancel={endDrag}
+        />
+      )}
+    </div>
   );
 }

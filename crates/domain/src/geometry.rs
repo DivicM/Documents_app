@@ -334,6 +334,39 @@ mod tests {
         }
     }
 
+    /// Asking for a bigger head on the same print means a tighter crop.
+    ///
+    /// The editor's +/- buttons are built on this: they adjust the head height
+    /// rather than scaling anything, so if the relationship ever inverted the
+    /// buttons would silently do the opposite of their labels.
+    #[test]
+    fn a_larger_head_height_yields_a_smaller_crop() {
+        let anchors = HeadAnchors {
+            chin: Point::new(500.0, 700.0),
+            crown: Point::new(500.0, 400.0),
+            estimated: false,
+        };
+        let image = Rect::new(0.0, 0.0, 2000.0, 1500.0);
+
+        let target = |head_mm: f64| CropTarget {
+            photo_width_mm: 35.0,
+            photo_height_mm: 45.0,
+            head_height_mm: head_mm,
+            chin_from_bottom_mm: None,
+        };
+
+        let small_head = solve_crop(&anchors, &target(30.0), &image).unwrap();
+        let large_head = solve_crop(&anchors, &target(42.0), &image).unwrap();
+
+        assert!(
+            large_head.width < small_head.width,
+            "a larger head should crop tighter: {} vs {}",
+            large_head.width,
+            small_head.width
+        );
+        assert!(large_head.height < small_head.height);
+    }
+
     #[test]
     fn eye_distance_and_center() {
         let d = detection(100.0, 100.0, 200.0, 200.0);

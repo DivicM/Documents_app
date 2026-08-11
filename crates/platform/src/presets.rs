@@ -157,7 +157,25 @@ pub struct SheetSettings {
     /// Printer chosen last time, restored on the next run.
     #[serde(default)]
     pub printer: String,
+    /// UI text scale as a percentage. 100 is the design size.
+    #[serde(default = "default_font_scale")]
+    pub font_scale_percent: u32,
+    /// Start with the window filling the screen.
+    ///
+    /// Maximised rather than true fullscreen: fullscreen hides the title bar
+    /// and the close button, which is the wrong default for a desktop tool.
+    #[serde(default)]
+    pub start_maximized: bool,
 }
+
+fn default_font_scale() -> u32 {
+    100
+}
+
+/// Bounds for [`SheetSettings::font_scale_percent`], clamped on the way in so
+/// a hand-edited config cannot make the UI unusable.
+pub const FONT_SCALE_MIN: u32 = 50;
+pub const FONT_SCALE_MAX: u32 = 200;
 
 fn default_paper() -> String {
     "10x15".to_string()
@@ -191,6 +209,8 @@ impl Default for SheetSettings {
             quarter_turn: true,
             turn_photo: true,
             printer: String::new(),
+            font_scale_percent: default_font_scale(),
+            start_maximized: false,
         }
     }
 }
@@ -315,6 +335,41 @@ mod tests {
         let back: Config = toml::from_str(&toml::to_string_pretty(&cfg).unwrap()).unwrap();
         assert_eq!(back.sheet.count, 8);
         assert_eq!(back.sheet.printer, "Brother HL-L2402D");
+    }
+
+    #[test]
+    fn font_scale_defaults_to_one_hundred_percent() {
+        // A config written before this setting existed must not come back with
+        // a zero scale, which would render the UI invisible.
+        let old = r#"
+[sheet]
+paper_id = "10x15"
+count = 6
+"#;
+        let cfg: Config = toml::from_str(old).unwrap();
+        assert_eq!(cfg.sheet.font_scale_percent, 100);
+    }
+
+    #[test]
+    fn start_maximized_round_trips_and_defaults_off() {
+        // Startup reads this before the window exists, so a config written
+        // before the setting existed must yield a usable default rather than
+        // failing to parse.
+        let old: Config = toml::from_str("[sheet]\npaper_id = \"10x15\"\n").unwrap();
+        assert!(!old.sheet.start_maximized);
+
+        let mut cfg = Config::default();
+        cfg.sheet.start_maximized = true;
+        let back: Config = toml::from_str(&toml::to_string_pretty(&cfg).unwrap()).unwrap();
+        assert!(back.sheet.start_maximized);
+    }
+
+    #[test]
+    fn font_scale_round_trips() {
+        let mut cfg = Config::default();
+        cfg.sheet.font_scale_percent = 150;
+        let back: Config = toml::from_str(&toml::to_string_pretty(&cfg).unwrap()).unwrap();
+        assert_eq!(back.sheet.font_scale_percent, 150);
     }
 
     #[test]

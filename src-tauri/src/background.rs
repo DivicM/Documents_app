@@ -16,6 +16,24 @@ use crate::face::{ensure_runtime_path, resource_path};
 #[derive(Default)]
 pub struct SegmentState(pub Mutex<SegmentInner>);
 
+/// Build the segmenter and keep it, so the first click does not pay for it.
+///
+/// Loading the model and building the ONNX session costs about 1.6s, which was
+/// previously charged to whoever first pressed "remove background". Called on a
+/// background thread at startup; failure is silent because the command loads
+/// the model itself if this has not finished or did not work.
+pub fn preload(state: &SegmentState) {
+    let Ok(mut guard) = state.0.lock() else { return };
+    if guard.segmenter.is_some() {
+        return;
+    }
+    ensure_runtime_path();
+    let Some(model) = resource_path("models/u2netp.onnx") else { return };
+    if let Ok(seg) = BackgroundSegmenter::from_path(&model) {
+        guard.segmenter = Some(seg);
+    }
+}
+
 pub struct SegmentInner {
     segmenter: Option<BackgroundSegmenter>,
     /// The model's output, never modified by editing.
@@ -80,13 +98,6 @@ pub fn segment_background(
         ));
     }
 
-    let mut rgb = Vec::with_capacity(width as usize * height as usize * 3);
-    for px in rgba.chunks_exact(4) {
-        rgb.extend_from_slice(&px[..3]);
-    }
-    let img = image::RgbImage::from_raw(width, height, rgb)
-        .ok_or_else(|| UiError::new("error.image.decode_failed"))?;
-
     let mut guard = state.0.lock().map_err(|_| UiError::new("error.internal.lock"))?;
 
     if guard.segmenter.is_none() {
@@ -101,7 +112,8 @@ pub fn segment_background(
 
     let segmenter = guard.segmenter.as_mut().expect("segmenter was just created");
     let backend = format!("{:?}", segmenter.backend());
-    let mask = segmenter.segment(&img).map_err(|e| {
+    // Straight from the RGBA the webview sent, with no intermediate image.
+    let mask = segmenter.segment_rgba(rgba, width, height).map_err(|e| {
         UiError::with("error.segment.failed", serde_json::json!({ "detail": e.to_string() }))
     })?;
 

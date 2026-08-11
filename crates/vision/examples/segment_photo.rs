@@ -30,6 +30,7 @@ fn main() {
     // `--cpu` forces the CPU provider, so the two backends can be compared on
     // the same machine and image.
     let force_cpu = std::env::args().any(|a| a == "--cpu");
+    let load_started = std::time::Instant::now();
     let mut seg = match if force_cpu {
         vision::segment::BackgroundSegmenter::cpu_only(model)
     } else {
@@ -43,6 +44,7 @@ fn main() {
     };
 
     println!("backend: {:?}", seg.backend());
+    println!("model load (session build): {:?}", load_started.elapsed());
 
     let started = std::time::Instant::now();
     let mask = match seg.segment(&img) {

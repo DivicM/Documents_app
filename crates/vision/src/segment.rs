@@ -149,14 +149,35 @@ impl BackgroundSegmenter {
         self.backend
     }
 
+    /// As [`segment`], but reading RGBA pixels directly.
+    ///
+    /// Skips building an intermediate `RgbImage`, which for a 1067x1600 photo
+    /// meant copying about 5MB before doing anything useful. The model resizes
+    /// to `INPUT_SIZE` regardless, so that copy only ever fed the resampler.
+    pub fn segment_rgba(
+        &mut self,
+        rgba: &[u8],
+        width: u32,
+        height: u32,
+    ) -> Result<AlphaMask, SegmentError> {
+        let input = preprocess_rgba(rgba, width, height);
+        self.run(input)
+    }
+
     /// Produce a mask at the model's own resolution.
     ///
     /// Not upscaled to the source size here: the caller knows what resolution
     /// it needs, and a mask stretched too early would waste memory on a
     /// print-sized image.
     pub fn segment(&mut self, image: &RgbImage) -> Result<AlphaMask, SegmentError> {
-        let input = preprocess(image);
+        self.run(preprocess(image))
+    }
 
+    /// Run the model on an already-normalised CHW tensor.
+    ///
+    /// Shared by both entry points so the two cannot drift apart in how they
+    /// read the output.
+    fn run(&mut self, input: Vec<f32>) -> Result<AlphaMask, SegmentError> {
         let tensor = Value::from_array((
             [1_usize, 3, INPUT_SIZE as usize, INPUT_SIZE as usize],
             input,
@@ -226,6 +247,37 @@ pub fn preprocess_for_bench(image: &RgbImage) -> Vec<f32> {
     preprocess(image)
 }
 
+/// As [`preprocess`], but sampling RGBA pixels directly.
+///
+/// Uses nearest-neighbour rather than the `image` crate's triangle filter. At
+/// this reduction — roughly 1600px down to 320 — the model is unaffected by the
+/// difference, and it avoids materialising an intermediate image.
+fn preprocess_rgba(rgba: &[u8], width: u32, height: u32) -> Vec<f32> {
+    let n = INPUT_SIZE as usize;
+    let mut out = vec![0.0f32; 3 * n * n];
+    if width == 0 || height == 0 {
+        return out;
+    }
+
+    let plane = n * n;
+    for y in 0..n {
+        // Sample from the centre of each destination pixel.
+        let sy = (((y as f32 + 0.5) / n as f32) * height as f32) as u32;
+        let sy = sy.min(height - 1) as usize;
+        for x in 0..n {
+            let sx = (((x as f32 + 0.5) / n as f32) * width as f32) as u32;
+            let sx = sx.min(width - 1) as usize;
+            let i = (sy * width as usize + sx) * 4;
+            let o = y * n + x;
+            for c in 0..3 {
+                let v = rgba[i + c] as f32 / 255.0;
+                out[c * plane + o] = (v - MEAN[c]) / STD[c];
+            }
+        }
+    }
+    out
+}
+
 /// Resize to the model input and normalise, laid out as CHW float.
 ///
 /// Stretches rather than letterboxes: the mask is mapped back over the whole
@@ -277,6 +329,39 @@ mod tests {
             let v = buf[c * n * n + centre];
             assert!(v.abs() < 0.15, "channel {c} normalised to {v}");
         }
+    }
+
+    #[test]
+    fn rgba_preprocessing_matches_the_rgb_path() {
+        // Two entry points feed the same model. A flat image makes them
+        // directly comparable: any difference here would be a bug in the
+        // channel order or the normalisation, not in the resampler.
+        let rgb = RgbImage::from_pixel(64, 48, image::Rgb([200, 120, 40]));
+        let mut rgba = Vec::with_capacity(64 * 48 * 4);
+        for _ in 0..(64 * 48) {
+            rgba.extend_from_slice(&[200, 120, 40, 255]);
+        }
+
+        let from_rgb = preprocess(&rgb);
+        let from_rgba = preprocess_rgba(&rgba, 64, 48);
+
+        assert_eq!(from_rgb.len(), from_rgba.len());
+        for (i, (a, b)) in from_rgb.iter().zip(from_rgba.iter()).enumerate() {
+            assert!((a - b).abs() < 1e-5, "differ at {i}: {a} vs {b}");
+        }
+    }
+
+    #[test]
+    fn rgba_preprocessing_keeps_channels_in_rgb_order() {
+        // Alpha must be skipped, not folded into a channel.
+        let mut rgba = Vec::new();
+        for _ in 0..(8 * 8) {
+            rgba.extend_from_slice(&[255, 0, 0, 255]);
+        }
+        let buf = preprocess_rgba(&rgba, 8, 8);
+        let n = INPUT_SIZE as usize;
+        let centre = (n / 2) * n + n / 2;
+        assert!(buf[centre] > buf[n * n + centre], "red should lead");
     }
 
     #[test]

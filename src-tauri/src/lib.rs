@@ -4,10 +4,46 @@ mod face;
 mod presets;
 mod spec;
 
+/// Whether the saved settings ask for a maximised window.
+///
+/// Read directly rather than through the IPC command because this runs before
+/// the webview exists. A missing or unreadable config simply means the default
+/// window size, which is why every failure returns false rather than stopping
+/// startup.
+fn wants_maximised() -> bool {
+    platform::calibration::config_path()
+        .and_then(|p| platform::presets::Config::load(&p).ok())
+        .map(|cfg| cfg.sheet.start_maximized)
+        .unwrap_or(false)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .setup(|app| {
+            use tauri::Manager;
+
+            // Applied at startup, before the window is shown, so it does not
+            // visibly resize itself after appearing.
+            if wants_maximised() {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.maximize();
+                }
+            }
+
+            // Build both ONNX sessions off the main thread while the user is
+            // still choosing a photo. Together they cost roughly two seconds,
+            // which was previously charged to the first detection and the
+            // first background removal.
+            let handle = app.handle().clone();
+            std::thread::spawn(move || {
+                face::preload(&handle.state::<face::DetectorState>());
+                background::preload(&handle.state::<background::SegmentState>());
+            });
+
+            Ok(())
+        })
         .manage(face::DetectorState::default())
         .manage(background::SegmentState::default())
         .invoke_handler(tauri::generate_handler![

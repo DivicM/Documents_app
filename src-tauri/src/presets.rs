@@ -110,6 +110,8 @@ pub struct SheetSettingsDto {
     pub quarter_turn: bool,
     pub turn_photo: bool,
     pub printer: String,
+    pub font_scale_percent: u32,
+    pub start_maximized: bool,
 }
 
 impl From<&platform::presets::SheetSettings> for SheetSettingsDto {
@@ -124,6 +126,8 @@ impl From<&platform::presets::SheetSettings> for SheetSettingsDto {
             quarter_turn: s.quarter_turn,
             turn_photo: s.turn_photo,
             printer: s.printer.clone(),
+            font_scale_percent: s.font_scale_percent,
+            start_maximized: s.start_maximized,
         }
     }
 }
@@ -148,6 +152,13 @@ pub fn save_sheet_settings(settings: SheetSettingsDto) -> Result<(), UiError> {
         quarter_turn: settings.quarter_turn,
         turn_photo: settings.turn_photo,
         printer: settings.printer,
+        // Clamped here rather than trusted: a value outside this range would
+        // make the UI unusable, and the config file can be hand-edited.
+        font_scale_percent: settings.font_scale_percent.clamp(
+            platform::presets::FONT_SCALE_MIN,
+            platform::presets::FONT_SCALE_MAX,
+        ),
+        start_maximized: settings.start_maximized,
     };
     cfg.save(&config_path()?).map_err(|e| {
         UiError::with("error.config.save_failed", serde_json::json!({ "detail": e.to_string() }))

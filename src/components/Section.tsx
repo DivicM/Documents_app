@@ -1,40 +1,28 @@
-import { useState, type ReactNode } from "react";
+import { type ReactNode } from "react";
 
 interface Props {
   title: string;
-  /** Open on first render. Later state is the user's. */
-  defaultOpen?: boolean;
-  /** Short status shown in the header, e.g. how many edits are active. */
+  /** Short status shown in the header, e.g. whether edits are active. */
   badge?: string | null;
   children: ReactNode;
 }
 
 /**
- * A collapsible group of editing controls.
+ * A titled group of editing controls.
  *
- * The editor has enough controls that a flat list buries the ones in use.
- * Grouping them keeps each concern — framing, tone, background — closed until
- * it is wanted.
+ * These were collapsible, but every group is worth seeing at a glance and
+ * collapsing only added a click between the user and the control they wanted.
+ * The heading now just labels the group.
  */
-export function Section({ title, defaultOpen = false, badge, children }: Props) {
-  const [open, setOpen] = useState(defaultOpen);
-
+export function Section({ title, badge, children }: Props) {
   return (
-    <section className={`edit-section ${open ? "edit-section-open" : ""}`}>
-      <button
-        type="button"
-        className="edit-section-header"
-        aria-expanded={open}
-        onClick={() => setOpen((v) => !v)}
-      >
-        <span className="edit-section-chevron" aria-hidden="true">
-          {open ? "▾" : "▸"}
-        </span>
+    <section className="edit-section">
+      <h3 className="edit-section-header">
         <span className="edit-section-title">{title}</span>
         {badge && <span className="badge">{badge}</span>}
-      </button>
+      </h3>
 
-      {open && <div className="edit-section-body">{children}</div>}
+      <div className="edit-section-body">{children}</div>
     </section>
   );
 }
