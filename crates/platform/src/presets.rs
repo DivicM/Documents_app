@@ -166,6 +166,13 @@ pub struct SheetSettings {
     /// and the close button, which is the wrong default for a desktop tool.
     #[serde(default)]
     pub start_maximized: bool,
+    /// UI theme: "light" or "dark". Anything else is treated as light.
+    #[serde(default = "default_theme")]
+    pub theme: String,
+}
+
+fn default_theme() -> String {
+    "light".to_string()
 }
 
 fn default_font_scale() -> u32 {
@@ -211,6 +218,7 @@ impl Default for SheetSettings {
             printer: String::new(),
             font_scale_percent: default_font_scale(),
             start_maximized: false,
+            theme: default_theme(),
         }
     }
 }
@@ -348,6 +356,19 @@ count = 6
 "#;
         let cfg: Config = toml::from_str(old).unwrap();
         assert_eq!(cfg.sheet.font_scale_percent, 100);
+    }
+
+    #[test]
+    fn theme_round_trips_and_defaults_to_light() {
+        // A config written before the theme existed must not come back with an
+        // empty string, which would render as an unstyled interface.
+        let old: Config = toml::from_str("[sheet]\npaper_id = \"10x15\"\n").unwrap();
+        assert_eq!(old.sheet.theme, "light");
+
+        let mut cfg = Config::default();
+        cfg.sheet.theme = "dark".into();
+        let back: Config = toml::from_str(&toml::to_string_pretty(&cfg).unwrap()).unwrap();
+        assert_eq!(back.sheet.theme, "dark");
     }
 
     #[test]

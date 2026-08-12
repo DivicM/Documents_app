@@ -112,6 +112,7 @@ pub struct SheetSettingsDto {
     pub printer: String,
     pub font_scale_percent: u32,
     pub start_maximized: bool,
+    pub theme: String,
 }
 
 impl From<&platform::presets::SheetSettings> for SheetSettingsDto {
@@ -128,6 +129,7 @@ impl From<&platform::presets::SheetSettings> for SheetSettingsDto {
             printer: s.printer.clone(),
             font_scale_percent: s.font_scale_percent,
             start_maximized: s.start_maximized,
+            theme: s.theme.clone(),
         }
     }
 }
@@ -159,6 +161,9 @@ pub fn save_sheet_settings(settings: SheetSettingsDto) -> Result<(), UiError> {
             platform::presets::FONT_SCALE_MAX,
         ),
         start_maximized: settings.start_maximized,
+        // Only the two known values are stored, so a hand-edited config cannot
+        // leave the UI with a theme name nothing matches.
+        theme: if settings.theme == "dark" { "dark".into() } else { "light".into() },
     };
     cfg.save(&config_path()?).map_err(|e| {
         UiError::with("error.config.save_failed", serde_json::json!({ "detail": e.to_string() }))

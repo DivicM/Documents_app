@@ -218,6 +218,8 @@ const hr: Record<string, string> = {
   "settings.tab_calibration": "Kalibracija",
   "settings.tab_mixed": "Miješani list",
   "settings.save": "Spremi postavke",
+  "settings.dark_mode": "Tamna tema",
+  "settings.dark_mode_hint": "Ne utječe na ispis ni na boju pozadine fotografije.",
   "settings.start_maximized": "Pokreni preko cijelog zaslona",
   "settings.start_maximized_hint":
     "Vrijedi od sljedećeg pokretanja aplikacije.",

@@ -887,6 +887,8 @@ export interface SheetSettings {
   fontScalePercent: number;
   /** Start with the window filling the screen. */
   startMaximized: boolean;
+  /** UI theme. */
+  theme: "light" | "dark";
 }
 
 interface RawSheetSettings {
@@ -901,6 +903,7 @@ interface RawSheetSettings {
   printer: string;
   font_scale_percent: number;
   start_maximized: boolean;
+  theme: string;
 }
 
 export async function getSheetSettings(): Promise<SheetSettings> {
@@ -917,6 +920,7 @@ export async function getSheetSettings(): Promise<SheetSettings> {
     printer: r.printer,
     fontScalePercent: r.font_scale_percent,
     startMaximized: r.start_maximized,
+    theme: r.theme === "dark" ? "dark" : "light",
   };
 }
 
@@ -934,6 +938,7 @@ export async function saveSheetSettings(s: SheetSettings): Promise<void> {
       printer: s.printer,
       font_scale_percent: s.fontScalePercent,
       start_maximized: s.startMaximized,
+      theme: s.theme,
     } satisfies RawSheetSettings,
   });
 }

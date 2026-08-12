@@ -72,7 +72,11 @@ export function PhotoPreview({
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
     ctx.clearRect(0, 0, cssW, cssH);
-    ctx.fillStyle = "#f0f1f3";
+    // Placeholder shown before a crop exists. Read from the stylesheet so it
+    // follows the theme; a literal grey would glare in the dark one.
+    ctx.fillStyle =
+      getComputedStyle(document.documentElement).getPropertyValue("--bg").trim() ||
+      "#f0f1f3";
     ctx.fillRect(0, 0, cssW, cssH);
 
     if (!image || !crop) return;

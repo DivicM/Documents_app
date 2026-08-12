@@ -211,6 +211,7 @@ export default function App() {
   const [settingsStatus, setSettingsStatus] = useState<string | null>(null);
   const [fontScale, setFontScale] = useState(100);
   const [startMaximized, setStartMaximized] = useState(false);
+  const [theme, setTheme] = useState<"light" | "dark">("light");
 
   // Undo/redo over edit parameters. Snapshots are cheap because they hold
   // numbers, not pixels.
@@ -369,6 +370,17 @@ export default function App() {
     document.documentElement.style.fontSize = `${(14 * fontScale) / 100}px`;
   }, [fontScale]);
 
+  /**
+   * Apply the theme by setting an attribute the stylesheet keys off.
+   *
+   * All colours are CSS variables, so the dark theme is a block of overrides
+   * rather than a second stylesheet — nothing here has to know which rules
+   * exist.
+   */
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+  }, [theme]);
+
   // Restore the persisted sheet settings on startup.
   useEffect(() => {
     ipc
@@ -383,6 +395,7 @@ export default function App() {
         setQuarterTurn(s.quarterTurn);
         setFontScale(s.fontScalePercent);
         setStartMaximized(s.startMaximized);
+        setTheme(s.theme);
         setTurnPhoto(s.turnPhoto);
         // Only if that printer is still installed; otherwise the default
         // chosen by refreshPrinters stands.
@@ -409,6 +422,7 @@ export default function App() {
         printer: selectedPrinter,
         fontScalePercent: fontScale,
         startMaximized,
+        theme,
       });
       setSettingsStatus(t("settings.saved"));
     } catch (e) {
@@ -426,6 +440,7 @@ export default function App() {
     selectedPrinter,
     fontScale,
     startMaximized,
+    theme,
   ]);
 
   // Recompute the mixed layout whenever the groups or paper change.
@@ -1435,6 +1450,17 @@ export default function App() {
             onReset={() => setFontScale(100)}
           />
           <p className="hint">{t("settings.font_scale_hint")}</p>
+
+          {/* Applied live, like the text scale: seeing it is the point. */}
+          <label className="checkbox">
+            <input
+              type="checkbox"
+              checked={theme === "dark"}
+              onChange={(e) => setTheme(e.target.checked ? "dark" : "light")}
+            />
+            {t("settings.dark_mode")}
+          </label>
+          <p className="hint">{t("settings.dark_mode_hint")}</p>
 
           {/* Takes effect on the next start: resizing the window now would be
               a surprise while the user is in a dialog. */}
