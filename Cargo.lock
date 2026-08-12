@@ -623,7 +623,7 @@ dependencies = [
 
 [[package]]
 name = "documents-app"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "domain",
  "image",
@@ -653,7 +653,7 @@ dependencies = [
 
 [[package]]
 name = "domain"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "proptest",
  "serde",
@@ -2294,7 +2294,7 @@ checksum = "19f132c84eca552bf34cab8ec81f1c1dcc229b811638f9d283dceabe58c5569e"
 
 [[package]]
 name = "platform"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "domain",
  "serde",
@@ -4008,7 +4008,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vision"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "domain",
  "image",

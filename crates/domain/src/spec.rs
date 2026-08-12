@@ -455,7 +455,25 @@ mod tests {
         let ids: Vec<&str> = specs.iter().map(|s| s.id.as_str()).collect();
         assert!(ids.contains(&"us-visa-51x51"));
         assert!(ids.contains(&"schengen-visa-35x45"));
+        assert!(ids.contains(&"generic-25x30"));
         assert!(ids.contains(&"free-custom"));
+    }
+
+    /// The small format is upright and carries no geometry.
+    ///
+    /// Both halves matter: swapping the dimensions would lay out a landscape
+    /// frame, and adding geometry would invent a head-height range no
+    /// regulation backs, which the picker would then present as a real check.
+    #[test]
+    fn the_small_format_is_upright_and_unchecked() {
+        let specs = builtin_specs().unwrap();
+        let spec = specs.iter().find(|s| s.id == "generic-25x30").expect("spec must exist");
+
+        assert_eq!(spec.print.width_mm, 25.0);
+        assert_eq!(spec.print.height_mm, 30.0);
+        assert!(spec.print.height_mm > spec.print.width_mm, "must be portrait");
+        assert!(spec.is_free_mode(), "no geometry, so cropping is free");
+        assert!(spec.rules.is_empty(), "a format with no source must claim no checks");
     }
 
     /// The whole point of splitting the files: a spec without a named

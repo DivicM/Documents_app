@@ -595,20 +595,37 @@ fn parse_print_request<'a, T: serde::de::DeserializeOwned>(
 ///
 /// Validates both lengths up front. Getting this wrong would index out of
 /// bounds deep inside the renderer, so it fails here with a clear message.
+///
+/// The arithmetic is checked because the dimensions come off the wire: on a
+/// 32-bit target a large width times height overflows, and a wrapped product
+/// could match the body length and admit a buffer the renderer would then read
+/// past. An overflow is simply a length no body can have, so it takes the same
+/// mismatch path as any other wrong size.
 fn split_print_body<'a>(body: &'a [u8], photo: &PhotoPayload) -> CmdResult<PrintPixels<'a>> {
-    let photo_len = photo.width as usize * photo.height as usize * 4;
-    let mask_len = photo
-        .background
-        .as_ref()
-        .map(|b| b.mask_width as usize * b.mask_height as usize)
-        .unwrap_or(0);
-
-    let expected = photo_len + mask_len;
-    if body.len() != expected {
-        return Err(UiError::with(
+    let size_mismatch = |expected: serde_json::Value| {
+        UiError::with(
             "error.image.size_mismatch",
             serde_json::json!({ "expected": expected, "got": body.len() }),
-        ));
+        )
+    };
+
+    let photo_len = (photo.width as usize)
+        .checked_mul(photo.height as usize)
+        .and_then(|px| px.checked_mul(4));
+    let mask_len = match photo.background.as_ref() {
+        Some(b) => (b.mask_width as usize).checked_mul(b.mask_height as usize),
+        None => Some(0),
+    };
+
+    let expected = photo_len.zip(mask_len).and_then(|(p, m)| p.checked_add(m));
+    let (Some(photo_len), Some(expected)) = (photo_len, expected) else {
+        // Too large to be a real buffer, so report it as the mismatch it is
+        // rather than naming a number that overflowed.
+        return Err(size_mismatch(serde_json::Value::Null));
+    };
+
+    if body.len() != expected {
+        return Err(size_mismatch(expected.into()));
     }
 
     Ok(PrintPixels { rgba: &body[..photo_len], mask: &body[photo_len..] })
@@ -894,5 +911,103 @@ pub fn print_sheet(request: tauri::ipc::Request<'_>) -> CmdResult<u32> {
     {
         let _ = (req, pixels);
         Err(UiError::new("error.platform.unsupported"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a payload the way the wire does, since it has no constructor.
+    fn payload(width: u32, height: u32, mask: Option<(u32, u32)>) -> PhotoPayload {
+        let background = match mask {
+            Some((mw, mh)) => serde_json::json!({
+                "mask_width": mw,
+                "mask_height": mh,
+                "colour": [255, 255, 255],
+            }),
+            None => serde_json::Value::Null,
+        };
+        serde_json::from_value(serde_json::json!({
+            "width": width,
+            "height": height,
+            "crop_x": 0.0,
+            "crop_y": 0.0,
+            "crop_width": width as f64,
+            "crop_height": height as f64,
+            "background": background,
+        }))
+        .expect("payload should deserialise")
+    }
+
+    #[test]
+    fn a_photo_without_a_mask_takes_the_whole_body() {
+        let p = payload(4, 3, None);
+        let body = vec![0u8; 4 * 3 * 4];
+        let split = split_print_body(&body, &p).expect("exact length should be accepted");
+        assert_eq!(split.rgba.len(), 4 * 3 * 4);
+        assert!(split.mask.is_empty(), "no mask was declared");
+    }
+
+    #[test]
+    fn a_mask_is_split_off_after_the_photo() {
+        // The two buffers are concatenated with no framing, so the boundary is
+        // derived purely from the declared dimensions. Distinct fill bytes
+        // prove the split lands in the right place rather than merely summing.
+        let p = payload(4, 3, Some((2, 2)));
+        let mut body = vec![0xAAu8; 4 * 3 * 4];
+        body.extend_from_slice(&[0xBBu8; 2 * 2]);
+
+        let split = split_print_body(&body, &p).expect("exact length should be accepted");
+        assert_eq!(split.rgba.len(), 4 * 3 * 4);
+        assert_eq!(split.mask.len(), 2 * 2);
+        assert!(split.rgba.iter().all(|&b| b == 0xAA), "photo bytes leaked into the mask");
+        assert!(split.mask.iter().all(|&b| b == 0xBB), "mask bytes came from the photo");
+    }
+
+    #[test]
+    fn a_short_body_is_rejected_rather_than_indexed_past_the_end() {
+        // The failure this guards: without the length check the renderer would
+        // index out of bounds deep inside the resampler.
+        let p = payload(4, 3, Some((2, 2)));
+        let body = vec![0u8; 4 * 3 * 4]; // mask missing entirely
+        let Err(err) = split_print_body(&body, &p) else { panic!("a short body must be refused") };
+        assert_eq!(err.key, "error.image.size_mismatch");
+        assert_eq!(err.params["expected"], 4 * 3 * 4 + 2 * 2);
+        assert_eq!(err.params["got"], 4 * 3 * 4);
+    }
+
+    #[test]
+    fn a_long_body_is_refused_too() {
+        // Extra bytes mean the sender and this side disagree about the layout,
+        // so trusting the prefix would print from a buffer built differently.
+        let p = payload(4, 3, None);
+        let body = vec![0u8; 4 * 3 * 4 + 1];
+        let Err(err) = split_print_body(&body, &p) else { panic!("a long body must be refused") };
+        assert_eq!(err.key, "error.image.size_mismatch");
+    }
+
+    #[test]
+    fn absurd_dimensions_are_refused_rather_than_trusted() {
+        // Dimensions come off the wire, so the product can overflow. Unchecked
+        // it panics in debug and wraps in release, and a wrapped length could
+        // match the body and hand the renderer a buffer it would read past.
+        let p = payload(u32::MAX, u32::MAX, None);
+        let body = vec![0u8; 16];
+        let Err(err) = split_print_body(&body, &p) else {
+            panic!("absurd dimensions must be refused")
+        };
+        assert_eq!(err.key, "error.image.size_mismatch");
+    }
+
+    #[test]
+    fn an_overflowing_mask_is_refused_too() {
+        // The mask multiplication is a second, separate overflow site.
+        let p = payload(2, 2, Some((u32::MAX, u32::MAX)));
+        let body = vec![0u8; 2 * 2 * 4];
+        let Err(err) = split_print_body(&body, &p) else {
+            panic!("an absurd mask must be refused")
+        };
+        assert_eq!(err.key, "error.image.size_mismatch");
     }
 }

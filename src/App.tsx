@@ -140,6 +140,15 @@ export default function App() {
   const [layout, setLayout] = useState<Layout | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
+  /**
+   * Set while a print job is being sent, to keep a second one from starting.
+   *
+   * Rendering a sheet at device resolution takes long enough to double-click
+   * through, and every extra job is a wasted sheet of photo paper that cannot
+   * be recalled once the spooler has it. One flag covers the sheet and both
+   * calibration prints because they all reach the same printer.
+   */
+  const [printing, setPrinting] = useState(false);
 
   const [measuredX, setMeasuredX] = useState("50");
   const [measuredY, setMeasuredY] = useState("50");
@@ -1038,14 +1047,17 @@ export default function App() {
   };
 
   const onPrintSquare = async (applyCalibration: boolean) => {
-    if (!selectedPrinter) return;
+    if (!selectedPrinter || printing) return;
     setStatus(null);
     setError(null);
+    setPrinting(true);
     try {
       const jobId = await ipc.printCalibrationSquare(selectedPrinter, applyCalibration);
       setStatus(t("print.sent", { jobId }));
     } catch (e) {
       setError(formatError(e));
+    } finally {
+      setPrinting(false);
     }
   };
 
@@ -1118,9 +1130,10 @@ export default function App() {
   }, [crop, image, rotationDeg, replaceBackground, mask, bgColour, adjustments]);
 
   const onPrintSheet = useCallback(async () => {
-    if (!selectedPrinter) return;
+    if (!selectedPrinter || printing) return;
     setStatus(null);
     setError(null);
+    setPrinting(true);
     try {
       // Print the photo when one is loaded and its crop is valid; otherwise
       // fall back to plain rectangles so the layout can still be checked.
@@ -1159,9 +1172,12 @@ export default function App() {
     } catch (e) {
       setError(formatError(e));
       return null;
+    } finally {
+      setPrinting(false);
     }
   }, [
     selectedPrinter,
+    printing,
     buildPhotoPayload,
     mixedMode,
     paper.widthMm,
@@ -1629,7 +1645,7 @@ export default function App() {
           <button
             type="button"
             onClick={() => void onPrintSquare(false)}
-            disabled={!selectedPrinter}
+            disabled={printing || !selectedPrinter}
           >
             {t("calibration.print_square")}
           </button>
@@ -1666,7 +1682,7 @@ export default function App() {
             <button
               type="button"
               onClick={() => void onPrintSquare(true)}
-              disabled={!selectedPrinter}
+              disabled={printing || !selectedPrinter}
             >
               {t("calibration.print_verify")}
             </button>
@@ -2044,13 +2060,14 @@ export default function App() {
             className="primary"
             onClick={() => void onPrintAndFinish()}
             disabled={
+              printing ||
               !selectedPrinter ||
               (mixedMode
                 ? !mixedLayout || mixedLayout.placements.length === 0
                 : !layout || layout.placements.length === 0)
             }
           >
-            {t("print.button")}
+            {printing ? t("print.sending") : t("print.button")}
           </button>
         </section>
       </div>

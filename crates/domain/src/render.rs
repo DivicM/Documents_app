@@ -145,13 +145,29 @@ pub struct RenderParams {
 
 /// The grey the cutting guides are drawn in.
 ///
-/// Light enough not to read as part of the print, dark enough to follow with a
-/// blade under normal light. Measured against white paper: 210 is roughly an
-/// 18% grey.
-const CUT_MARK_GREY: u8 = 210;
+/// 198, a 22% grey: clearly visible under normal light, but far enough from
+/// black that an inaccurate cut leaves no obvious dark edge on the photograph.
+///
+/// Settled by printing. 64 (75%) read as a hard line, 226 (11%) was weak on
+/// paper, 190 (25%) was right but a shade heavy; this is one step back from
+/// it. Two earlier attempts at a pale tone printed as nothing at all, but both
+/// were a single pixel wide — 0.085mm at 300dpi — and a photo printer
+/// halftones something that thin and that pale into no ink. The line is now
+/// [`CUT_MARK_THICKNESS_MM`] wide, which is what lets a light tone survive at
+/// all. Adjust this value rather than the thickness if the guide ever needs to
+/// change again.
+const CUT_MARK_GREY: u8 = 198;
 
-/// Length of each corner tick, in millimetres.
-const CUT_MARK_LENGTH_MM: f64 = 2.5;
+/// Thickness of each guide line, in millimetres.
+///
+/// Specified in millimetres rather than pixels because that is what reaches
+/// the paper: a one-pixel line is 0.085mm at 300dpi and 0.042mm at 600dpi, so
+/// it grew fainter the better the printer, and vanished entirely on a
+/// dye-sublimation unit. 0.35mm reads clearly at arm's length and is still
+/// narrow enough to cut along accurately. Much below 0.3mm the line starts
+/// losing dither cells again and prints unevenly, so this is near the floor
+/// rather than a free parameter.
+const CUT_MARK_THICKNESS_MM: f64 = 0.35;
 
 impl RenderParams {
     /// Uncalibrated, no unprintable border, black fill.
@@ -360,18 +376,27 @@ fn sample_crop(source: &PhotoSource<'_>, width: u32, height: u32) -> ImageBuf {
     }
 }
 
-/// Draw faint corner ticks just outside a placement, for cutting by hand.
+/// Draw a cutting frame immediately outside one photograph.
 ///
-/// The ticks sit in the gutter rather than on the photograph, so trimming along
-/// them removes them with the waste. Blending towards white rather than writing
-/// a fixed grey keeps them faint on any paper.
+/// A closed rectangle around the picture rather than lines across the sheet:
+/// sheet-wide lines carried on through the empty part of the paper and drew a
+/// grid of cells where no photograph was, which is noise to cut around rather
+/// than a guide.
+///
+/// The band sits entirely outside the placement, so trimming along its inner
+/// edge removes the guide with the waste. Nothing is written over the picture,
+/// which means the photographs do not have to be drawn again afterwards.
 fn draw_cut_marks(raster: &mut Raster, at: &PixelRect, dpi_x: f64, dpi_y: f64) {
-    let len_x = mm_to_px_exact(CUT_MARK_LENGTH_MM, dpi_x).round().max(1.0) as u32;
-    let len_y = mm_to_px_exact(CUT_MARK_LENGTH_MM, dpi_y).round().max(1.0) as u32;
+    if at.width == 0 || at.height == 0 {
+        return;
+    }
+
+    let thick_x = mm_to_px_exact(CUT_MARK_THICKNESS_MM, dpi_x).round().max(1.0) as u32;
+    let thick_y = mm_to_px_exact(CUT_MARK_THICKNESS_MM, dpi_y).round().max(1.0) as u32;
 
     // Darken towards the guide grey, never lighten: the sheet is white, so
     // blending towards white would leave nothing visible at all.
-    let mut mark = |x: u32, y: u32| {
+    let mark = |raster: &mut Raster, x: u32, y: u32| {
         if x >= raster.width_px || y >= raster.height_px {
             return;
         }
@@ -381,24 +406,35 @@ fn draw_cut_marks(raster: &mut Raster, at: &PixelRect, dpi_x: f64, dpi_y: f64) {
         }
     };
 
-    let left = at.x;
-    let right = at.x + at.width;
-    let top = at.y;
-    let bottom = at.y + at.height;
+    // The rectangle the frame occupies, one band outside the photograph on
+    // every side. Saturating so a placement flush against the sheet edge
+    // simply loses the part that falls off it.
+    let outer_left = at.x.saturating_sub(thick_x);
+    let outer_top = at.y.saturating_sub(thick_y);
+    let outer_right = at.x.saturating_add(at.width).saturating_add(thick_x);
+    let outer_bottom = at.y.saturating_add(at.height).saturating_add(thick_y);
 
-    // Horizontal ticks, running outwards from the left and right edges.
-    for y in [top, bottom.saturating_sub(1)] {
-        for i in 0..len_x {
-            mark(left.saturating_sub(i + 1), y);
-            mark(right + i, y);
+    // Top and bottom bands, drawn the full width of the frame so the corners
+    // are filled and the rectangle closes.
+    for y in outer_top..at.y {
+        for x in outer_left..outer_right {
+            mark(raster, x, y);
+        }
+    }
+    for y in at.y.saturating_add(at.height)..outer_bottom {
+        for x in outer_left..outer_right {
+            mark(raster, x, y);
         }
     }
 
-    // Vertical ticks, running outwards from the top and bottom edges.
-    for x in [left, right.saturating_sub(1)] {
-        for i in 0..len_y {
-            mark(x, top.saturating_sub(i + 1));
-            mark(x, bottom + i);
+    // Left and right bands, spanning only the height of the photograph: the
+    // corners are already covered above.
+    for y in at.y..at.y.saturating_add(at.height) {
+        for x in outer_left..at.x {
+            mark(raster, x, y);
+        }
+        for x in at.x.saturating_add(at.width)..outer_right {
+            mark(raster, x, y);
         }
     }
 }
@@ -742,9 +778,10 @@ mod tests {
     }
 
     #[test]
-    fn cut_marks_are_faint_rather_than_black() {
-        // "Barely visible" was the requirement; a dark line would be worse than
-        // none, since it shows on the cut edge.
+    fn cut_marks_are_grey_rather_than_black() {
+        // Grey so the guide does not show as a hard line on the cut edge, but
+        // dark enough that halftoning still lays down ink. An earlier 210 was
+        // faint on screen and printed as nothing at all.
         let px = quadrant_image();
         let src = ImageRef::new(&px, 100, 100).unwrap();
         let paper = SizeMm::new(60.0, 60.0);
@@ -760,7 +797,99 @@ mod tests {
         let o = marked.offset(r.x - 2, r.y);
         let v = marked.pixels[o];
         assert!(v < 250, "mark is invisible: {v}");
-        assert!(v > 180, "mark is too dark to be called faint: {v}");
+        assert!(v > 128, "mark is darker than a faint guide should be: {v}");
+    }
+
+    /// The guide is a closed frame around the photograph, nothing more.
+    ///
+    /// Lines drawn across the whole sheet carried on through the empty part of
+    /// the paper and left a grid of cells where no photograph was. The frame
+    /// must stop at the picture it belongs to.
+    #[test]
+    fn cut_marks_frame_the_photo_without_running_across_the_sheet() {
+        let px = quadrant_image();
+        let src = ImageRef::new(&px, 100, 100).unwrap();
+        let paper = SizeMm::new(60.0, 60.0);
+        // Set well in from every edge, so a sheet-wide line would be obvious.
+        let p = placement(20.0, 20.0, 20.0, 25.0);
+        let source = PhotoSource::new(src, 0.0, 0.0, 100.0, 100.0);
+
+        let mut params = RenderParams::new(300.0, 300.0);
+        params.cut_marks = true;
+        let marked = render_sheet_with_photo(&sheet_with(p), paper, &params, &source);
+        let r = placement_to_pixels(&p, 300.0, 300.0);
+
+        // All four sides are drawn, so the rectangle closes.
+        let mid_x = r.x + r.width / 2;
+        let mid_y = r.y + r.height / 2;
+        for (x, y, side) in [
+            (mid_x, r.y - 1, "top"),
+            (mid_x, r.y + r.height, "bottom"),
+            (r.x - 1, mid_y, "left"),
+            (r.x + r.width, mid_y, "right"),
+        ] {
+            let v = marked.pixels[marked.offset(x, y)];
+            assert!(v < 250, "{side} of the frame is missing: {v}");
+        }
+
+        // The corners are filled, so the frame has no gaps.
+        for (x, y) in [(r.x - 1, r.y - 1), (r.x + r.width, r.y + r.height)] {
+            let v = marked.pixels[marked.offset(x, y)];
+            assert!(v < 250, "frame corner at {x},{y} is open: {v}");
+        }
+
+        // Away from the photograph the paper stays clean: no grid, and the
+        // sheet edges carry nothing at all.
+        for (x, y, where_) in [
+            (0u32, r.y, "left edge of the sheet"),
+            (marked.width_px - 1, r.y, "right edge of the sheet"),
+            (r.x, 0u32, "top edge of the sheet"),
+            (r.x, marked.height_px - 1, "bottom edge of the sheet"),
+        ] {
+            let v = marked.pixels[marked.offset(x, y)];
+            assert_eq!(v, 255, "a line ran across the sheet at the {where_}");
+        }
+    }
+
+    /// The marks must have a physical width, not a pixel one.
+    ///
+    /// This is what made them invisible in print: a single-pixel line is
+    /// 0.085mm at 300dpi and half that at 600, so the better the printer the
+    /// fainter the guide, until it disappeared. Asserting in millimetres means
+    /// the guide cannot silently thin out again as resolution rises.
+    #[test]
+    fn cut_marks_keep_their_width_in_millimetres_at_any_resolution() {
+        let px = quadrant_image();
+        let src = ImageRef::new(&px, 100, 100).unwrap();
+        let paper = SizeMm::new(60.0, 60.0);
+        let p = placement(10.0, 10.0, 20.0, 25.0);
+        let source = PhotoSource::new(src, 0.0, 0.0, 100.0, 100.0);
+
+        for dpi in [300.0, 600.0, 1200.0] {
+            let mut params = RenderParams::new(dpi, dpi);
+            params.cut_marks = true;
+            let marked = render_sheet_with_photo(&sheet_with(p), paper, &params, &source);
+            let r = placement_to_pixels(&p, dpi, dpi);
+
+            // Walk up from the top edge, counting the marked rows of the
+            // horizontal tick that runs left of the placement.
+            let x = r.x - 2;
+            let mut rows = 0u32;
+            for dy in 0..32 {
+                let y = r.y.saturating_sub(dy);
+                if marked.pixels[marked.offset(x, y)] < 250 {
+                    rows += 1;
+                } else {
+                    break;
+                }
+            }
+
+            let mm = rows as f64 * 25.4 / dpi;
+            assert!(
+                mm >= CUT_MARK_THICKNESS_MM * 0.5,
+                "at {dpi}dpi the tick is only {mm:.3}mm ({rows}px), too thin to print"
+            );
+        }
     }
 
     #[test]

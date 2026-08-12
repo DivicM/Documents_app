@@ -52,6 +52,7 @@ const hr: Record<string, string> = {
   "calibration.saved": "Kalibracija spremljena.",
 
   "print.button": "Ispiši",
+  "print.sending": "Ispisujem…",
   "print.sent": "Poslano na printer (job {jobId})",
 
   "error.printer.list_failed": "Nije moguće dohvatiti popis printera. ({detail})",
