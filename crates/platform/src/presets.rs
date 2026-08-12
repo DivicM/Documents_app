@@ -149,10 +149,12 @@ pub struct SheetSettings {
     #[serde(default = "default_true")]
     pub cut_marks: bool,
     /// Turn each photo frame on its side: 35x45 becomes 45x35.
-    #[serde(default = "default_true")]
+    ///
+    /// Off by default: photographs print upright, the way they are looked at.
+    #[serde(default)]
     pub quarter_turn: bool,
     /// Turn the picture inside its frame. Independent of the frame's shape.
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub turn_photo: bool,
     /// Printer chosen last time, restored on the next run.
     #[serde(default)]
@@ -213,8 +215,8 @@ impl Default for SheetSettings {
             gutter_mm: default_gutter(),
             align_top_left: false,
             cut_marks: true,
-            quarter_turn: true,
-            turn_photo: true,
+            quarter_turn: false,
+            turn_photo: false,
             printer: String::new(),
             font_scale_percent: default_font_scale(),
             start_maximized: false,
@@ -336,7 +338,8 @@ mod tests {
     fn sheet_settings_round_trip_and_default_sensibly() {
         let mut cfg = Config::default();
         assert_eq!(cfg.sheet.paper_id, "10x15", "unset paper should default");
-        assert!(cfg.sheet.quarter_turn, "photos are laid sideways by default");
+        assert!(!cfg.sheet.quarter_turn, "photos print upright by default");
+        assert!(!cfg.sheet.turn_photo, "the picture is not turned by default");
 
         cfg.sheet.count = 8;
         cfg.sheet.printer = "Brother HL-L2402D".into();

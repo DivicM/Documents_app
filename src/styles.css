@@ -452,6 +452,11 @@ label.checkbox input[type="checkbox"] {
   margin: 0;
 }
 
+/* Sits directly under the print button, so it reads as part of that action. */
+.print-option {
+  margin-top: 12px;
+}
+
 input:focus,
 select:focus {
   outline: 2px solid var(--accent);
@@ -758,6 +763,84 @@ button.small {
 .format-card-warning {
   font-size: 0.857em;
   color: var(--warning);
+}
+
+/* Step 2 as a row: the format list keeps its old width and centring, and the
+   size panel occupies the empty space to its right.
+
+   The row is centred by two equal spacers rather than `justify-content`, so
+   the list stays put whether or not the panel is showing — otherwise
+   selecting the custom format would shunt every card sideways under the
+   pointer. */
+.format-row {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  justify-content: center;
+  gap: 20px;
+  padding-left: 220px; /* mirrors the panel, keeping the list centred */
+}
+
+.format-list {
+  max-width: 760px;
+  width: 100%;
+}
+
+.custom-size {
+  flex: 0 0 200px;
+  align-self: flex-start;
+  padding: 16px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.custom-size h3 {
+  margin: 0 0 12px;
+  font-size: 0.929em;
+  font-weight: 600;
+}
+
+.custom-size label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 12px;
+  font-size: 0.857em;
+  color: var(--muted);
+}
+
+.custom-size label:last-child {
+  margin-bottom: 0;
+}
+
+.custom-size input {
+  width: 100%;
+}
+
+.custom-size input[aria-invalid="true"] {
+  border-color: var(--error);
+}
+
+.custom-size-error {
+  margin: -8px 0 12px;
+  font-size: 0.857em;
+  color: var(--error);
+}
+
+/* Too narrow to hold a column beside the list: give the reserved space back
+   and let the panel sit under the list instead of squeezing it. */
+@media (max-width: 1240px) {
+  .format-row {
+    flex-wrap: wrap;
+    padding-left: 0;
+    overflow-y: auto;
+  }
+
+  .custom-size {
+    flex-basis: 100%;
+    max-width: 760px;
+  }
 }
 
 /* --- Settings dialog --- */

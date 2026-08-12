@@ -184,7 +184,10 @@ pub fn solve_layout(req: LayoutRequest) -> CmdResult<LayoutDto> {
         margin_mm: req.margin_mm,
         gutter_mm: req.gutter_mm,
         alignment: if req.align_top_left { Alignment::TopLeft } else { Alignment::Center },
-        lock_orientation: req.quarter_turn,
+        // Always locked: the requested shape is the one that prints. Letting
+        // the solver rotate for density is what laid every photo on its side
+        // to fit one more on the sheet.
+        lock_orientation: true,
     };
 
     let sheet = domain::layout::solve(&cfg).map_err(|e| match e {
@@ -298,7 +301,8 @@ pub fn solve_mixed_layout(req: MixedLayoutRequest) -> CmdResult<MixedLayoutDto> 
         &groups,
         req.margin_mm,
         req.gutter_mm,
-        req.quarter_turn,
+        // Locked, as in the single-size path: no rotating for density.
+        true,
     )
     .map_err(map_layout_error)?;
 
@@ -655,6 +659,9 @@ pub struct PrintSheetRequest {
     /// Print faint guides showing where each photo ends, for cutting by hand.
     #[serde(default)]
     pub cut_marks: bool,
+    /// Print a guide along the bottom edge of each photo only.
+    #[serde(default)]
+    pub bottom_mark: bool,
     /// Omitted to print the layout as plain rectangles, which is useful for
     /// checking geometry without using up photo paper.
     pub photo: Option<PhotoPayload>,
@@ -677,6 +684,9 @@ pub struct PrintMixedRequest {
     /// Print faint guides showing where each photo ends.
     #[serde(default)]
     pub cut_marks: bool,
+    /// Print a guide along the bottom edge of each photo only.
+    #[serde(default)]
+    pub bottom_mark: bool,
     pub photo: Option<PhotoPayload>,
 }
 
@@ -731,7 +741,8 @@ pub fn print_mixed_sheet(request: tauri::ipc::Request<'_>) -> CmdResult<u32> {
             &groups,
             req.margin_mm,
             req.gutter_mm,
-            req.quarter_turn,
+            // Locked, as in the single-size path: no rotating for density.
+            true,
         )
         .map_err(map_layout_error)?;
 
@@ -756,6 +767,7 @@ pub fn print_mixed_sheet(request: tauri::ipc::Request<'_>) -> CmdResult<u32> {
         params.calibration = calibration_for(&req.printer, paper_w, paper_h, false);
         params.turn_photo = req.turn_photo;
         params.cut_marks = req.cut_marks;
+        params.bottom_mark = req.bottom_mark;
 
         let placements: Vec<Placement> =
             mixed.placements.iter().map(|g| g.placement).collect();
@@ -847,9 +859,9 @@ pub fn print_sheet(request: tauri::ipc::Request<'_>) -> CmdResult<u32> {
             margin_mm: req.margin_mm,
             gutter_mm: req.gutter_mm,
             alignment: if req.align_top_left { Alignment::TopLeft } else { Alignment::Center },
-            // The turned frame is the point, so the solver must not undo it by
-            // rotating back to whichever orientation packs denser.
-            lock_orientation: req.quarter_turn,
+            // Always locked, as in solve_layout: the requested shape is the
+            // one that prints, whether or not the frame was turned.
+            lock_orientation: true,
         };
         let sheet = domain::layout::solve(&cfg)
             .map_err(|_| UiError::new("error.layout.invalid_dimensions"))?;
@@ -875,6 +887,7 @@ pub fn print_sheet(request: tauri::ipc::Request<'_>) -> CmdResult<u32> {
         params.calibration = calibration_for(&req.printer, paper_w, paper_h, false);
         params.turn_photo = req.turn_photo;
         params.cut_marks = req.cut_marks;
+        params.bottom_mark = req.bottom_mark;
 
         let raster = match &req.photo {
             Some(p) => {

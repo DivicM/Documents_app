@@ -3,10 +3,16 @@ import { t } from "../lib/i18n";
 import type { SpecSummary } from "../lib/ipc";
 import { formatMm } from "../lib/units";
 
+/// The spec whose size the user types in themselves.
+const CUSTOM_ID = "free-custom";
+
 interface Props {
   specs: SpecSummary[];
   selectedId: string;
   onSelect: (id: string) => void;
+  /** Current custom size, so its card shows what is being typed elsewhere. */
+  customWidthMm: number;
+  customHeightMm: number;
 }
 
 /** Which heading a format sits under. */
@@ -24,7 +30,13 @@ function groupOf(spec: SpecSummary): string {
  * verified source say so — the brief forbids presenting a guessed figure as if
  * it were regulation.
  */
-export function FormatPicker({ specs, selectedId, onSelect }: Props) {
+export function FormatPicker({
+  specs,
+  selectedId,
+  onSelect,
+  customWidthMm,
+  customHeightMm,
+}: Props) {
   const groups = useMemo(() => {
     const order = ["picker.group_hr", "picker.group_intl", "picker.group_other"];
     const byGroup = new Map<string, SpecSummary[]>();
@@ -47,6 +59,7 @@ export function FormatPicker({ specs, selectedId, onSelect }: Props) {
 
           {items.map((spec) => {
             const selected = spec.id === selectedId;
+            const custom = spec.id === CUSTOM_ID;
             return (
               <button
                 key={spec.id}
@@ -57,8 +70,10 @@ export function FormatPicker({ specs, selectedId, onSelect }: Props) {
               >
                 <span className="format-card-size">
                   {t("picker.size", {
-                    width: formatMm(spec.widthMm, 0),
-                    height: formatMm(spec.heightMm, 0),
+                    // The custom format's size is the one being typed, not the
+                    // placeholder the spec file carries.
+                    width: formatMm(custom ? customWidthMm : spec.widthMm, 0),
+                    height: formatMm(custom ? customHeightMm : spec.heightMm, 0),
                   })}
                 </span>
 

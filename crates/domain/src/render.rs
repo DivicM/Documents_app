@@ -141,6 +141,13 @@ pub struct RenderParams {
     /// a line over the picture would be printed into the finished photo and
     /// could not be trimmed away.
     pub cut_marks: bool,
+    /// Draw the guide only along the bottom edge of each photograph.
+    ///
+    /// Independent of [`Self::cut_marks`], so a sheet can carry the single
+    /// line without the full frame. "Bottom" is the bottom of the picture as
+    /// it will be looked at, which is the bottom of its placement — the
+    /// renderer turns the pixels inside the frame, never the frame itself.
+    pub bottom_mark: bool,
 }
 
 /// The grey the cutting guides are drawn in.
@@ -180,6 +187,7 @@ impl RenderParams {
             fill: [0, 0, 0, 255],
             turn_photo: false,
             cut_marks: false,
+            bottom_mark: false,
         }
     }
 }
@@ -292,8 +300,11 @@ pub fn render_sheet_with_photo(
     for p in &sheet.placements {
         let r = placement_to_pixels(&correct(p, params, &cal), params.dpi_x, params.dpi_y);
         blit(&mut raster, &photo, &r, rotate);
-        if params.cut_marks {
-            draw_cut_marks(&mut raster, &r, params.dpi_x, params.dpi_y);
+        // The full frame wins when both are set: it already includes the
+        // bottom edge, so drawing that again would be a no-op.
+        if params.cut_marks || params.bottom_mark {
+            let sides = CutSides { all: params.cut_marks };
+            draw_cut_marks(&mut raster, &r, params.dpi_x, params.dpi_y, sides);
         }
     }
 
@@ -339,8 +350,11 @@ pub fn render_mixed_sheet(
             .expect("just inserted");
 
         blit(&mut raster, photo, &r, rotate);
-        if params.cut_marks {
-            draw_cut_marks(&mut raster, &r, params.dpi_x, params.dpi_y);
+        // The full frame wins when both are set: it already includes the
+        // bottom edge, so drawing that again would be a no-op.
+        if params.cut_marks || params.bottom_mark {
+            let sides = CutSides { all: params.cut_marks };
+            draw_cut_marks(&mut raster, &r, params.dpi_x, params.dpi_y, sides);
         }
     }
 
@@ -386,7 +400,15 @@ fn sample_crop(source: &PhotoSource<'_>, width: u32, height: u32) -> ImageBuf {
 /// The band sits entirely outside the placement, so trimming along its inner
 /// edge removes the guide with the waste. Nothing is written over the picture,
 /// which means the photographs do not have to be drawn again afterwards.
-fn draw_cut_marks(raster: &mut Raster, at: &PixelRect, dpi_x: f64, dpi_y: f64) {
+///
+/// `sides` selects the closed frame or the bottom edge on its own.
+fn draw_cut_marks(
+    raster: &mut Raster,
+    at: &PixelRect,
+    dpi_x: f64,
+    dpi_y: f64,
+    sides: CutSides,
+) {
     if at.width == 0 || at.height == 0 {
         return;
     }
@@ -414,14 +436,23 @@ fn draw_cut_marks(raster: &mut Raster, at: &PixelRect, dpi_x: f64, dpi_y: f64) {
     let outer_right = at.x.saturating_add(at.width).saturating_add(thick_x);
     let outer_bottom = at.y.saturating_add(at.height).saturating_add(thick_y);
 
-    // Top and bottom bands, drawn the full width of the frame so the corners
-    // are filled and the rectangle closes.
-    for y in outer_top..at.y {
-        for x in outer_left..outer_right {
+    // The bottom band runs the full width of the frame when the sides are
+    // drawn too, so the corners close; on its own it spans only the
+    // photograph, so the line does not stick out past it.
+    let (bottom_from, bottom_to) =
+        if sides.all { (outer_left, outer_right) } else { (at.x, at.x.saturating_add(at.width)) };
+    for y in at.y.saturating_add(at.height)..outer_bottom {
+        for x in bottom_from..bottom_to {
             mark(raster, x, y);
         }
     }
-    for y in at.y.saturating_add(at.height)..outer_bottom {
+
+    if !sides.all {
+        return;
+    }
+
+    // Top band, the full width of the frame so the upper corners are filled.
+    for y in outer_top..at.y {
         for x in outer_left..outer_right {
             mark(raster, x, y);
         }
@@ -437,6 +468,13 @@ fn draw_cut_marks(raster: &mut Raster, at: &PixelRect, dpi_x: f64, dpi_y: f64) {
             mark(raster, x, y);
         }
     }
+}
+
+/// Which sides of the guide to draw around one photograph.
+#[derive(Debug, Clone, Copy)]
+struct CutSides {
+    /// All four sides. False means the bottom edge alone.
+    all: bool,
 }
 
 /// Copy a resampled photo into one placement, rotating 90 degrees if needed.
@@ -849,6 +887,64 @@ mod tests {
             let v = marked.pixels[marked.offset(x, y)];
             assert_eq!(v, 255, "a line ran across the sheet at the {where_}");
         }
+    }
+
+    /// The bottom-only guide draws one edge and leaves the other three clean.
+    #[test]
+    fn the_bottom_mark_draws_only_under_the_photo() {
+        let px = quadrant_image();
+        let src = ImageRef::new(&px, 100, 100).unwrap();
+        let paper = SizeMm::new(60.0, 60.0);
+        let p = placement(20.0, 20.0, 20.0, 25.0);
+        let source = PhotoSource::new(src, 0.0, 0.0, 100.0, 100.0);
+
+        let mut params = RenderParams::new(300.0, 300.0);
+        params.bottom_mark = true;
+        let marked = render_sheet_with_photo(&sheet_with(p), paper, &params, &source);
+        let r = placement_to_pixels(&p, 300.0, 300.0);
+
+        let mid_x = r.x + r.width / 2;
+        let mid_y = r.y + r.height / 2;
+
+        // The line is there, immediately under the photograph.
+        let v = marked.pixels[marked.offset(mid_x, r.y + r.height)];
+        assert!(v < 250, "the bottom line is missing: {v}");
+
+        // Nothing above or beside it.
+        for (x, y, side) in [
+            (mid_x, r.y - 1, "top"),
+            (r.x - 1, mid_y, "left"),
+            (r.x + r.width, mid_y, "right"),
+        ] {
+            let v = marked.pixels[marked.offset(x, y)];
+            assert_eq!(v, 255, "{side} should have no guide when only the bottom is asked for");
+        }
+
+        // And it stops at the photograph rather than sticking out sideways,
+        // which would leave a stub on the sheet after cutting.
+        let v = marked.pixels[marked.offset(r.x - 1, r.y + r.height)];
+        assert_eq!(v, 255, "the bottom line runs past the photo's left edge");
+    }
+
+    /// Asking for both draws the frame, which already contains the bottom.
+    #[test]
+    fn the_full_frame_wins_over_the_bottom_mark() {
+        let px = quadrant_image();
+        let src = ImageRef::new(&px, 100, 100).unwrap();
+        let paper = SizeMm::new(60.0, 60.0);
+        let p = placement(20.0, 20.0, 20.0, 25.0);
+        let source = PhotoSource::new(src, 0.0, 0.0, 100.0, 100.0);
+
+        let mut both = RenderParams::new(300.0, 300.0);
+        both.cut_marks = true;
+        both.bottom_mark = true;
+        let a = render_sheet_with_photo(&sheet_with(p), paper, &both, &source);
+
+        let mut frame_only = RenderParams::new(300.0, 300.0);
+        frame_only.cut_marks = true;
+        let b = render_sheet_with_photo(&sheet_with(p), paper, &frame_only, &source);
+
+        assert_eq!(a.pixels, b.pixels, "the bottom mark changed the full frame");
     }
 
     /// The marks must have a physical width, not a pixel one.

@@ -760,6 +760,8 @@ export async function printMixedSheet(args: {
   turnPhoto?: boolean;
   /** Print faint guides showing where each photo ends, for cutting by hand. */
   cutMarks?: boolean;
+  /** Print a guide along the bottom edge of each photo only. */
+  bottomMark?: boolean;
   photo?: PhotoPayload | null;
 }): Promise<number> {
   return invokePrint(
@@ -774,6 +776,7 @@ export async function printMixedSheet(args: {
       quarter_turn: args.quarterTurn ?? false,
       turn_photo: args.turnPhoto ?? false,
       cut_marks: args.cutMarks ?? false,
+      bottom_mark: args.bottomMark ?? false,
       photo: args.photo ? photoToWire(args.photo) : null,
     },
     args.photo,
@@ -982,6 +985,8 @@ export async function printSheet(args: {
   turnPhoto?: boolean;
   /** Print faint guides showing where each photo ends, for cutting by hand. */
   cutMarks?: boolean;
+  /** Print a guide along the bottom edge of each photo only. */
+  bottomMark?: boolean;
   /** Omit to print the layout as plain rectangles, without using photo paper. */
   photo?: PhotoPayload | null;
 }): Promise<number> {
@@ -1000,6 +1005,7 @@ export async function printSheet(args: {
       quarter_turn: args.quarterTurn ?? false,
       turn_photo: args.turnPhoto ?? false,
       cut_marks: args.cutMarks ?? false,
+      bottom_mark: args.bottomMark ?? false,
       photo: args.photo ? photoToWire(args.photo) : null,
     },
     args.photo,

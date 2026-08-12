@@ -25,9 +25,10 @@ const hr: Record<string, string> = {
   "layout.capacity": "Stane na list: {capacity}",
   "layout.sheets_needed": "Potrebno listova: {sheets}",
   "layout.align_top_left": "Poravnaj u kut",
-  "layout.cut_marks": "Linije za rezanje",
+  "layout.cut_marks": "Okvir za rezanje",
+  "layout.bottom_mark": "Crta samo ispod slike",
   "layout.cut_marks_hint":
-    "Blijede oznake u kutovima svake slike, ispisuju se na papir. Nalaze se izvan slike pa ih rezanjem uklonite.",
+    "Blijedi sivi okvir oko svake slike, ispisuje se na papir. Nalazi se izvan slike pa ga rezanjem uklonite.",
   "layout.rotated": "Slike su zakrenute za 90° radi boljeg iskorištenja papira",
 
   "printer.label": "Printer",
@@ -255,6 +256,13 @@ const hr: Record<string, string> = {
   "picker.group_hr": "Hrvatska",
   "picker.group_intl": "Međunarodno",
   "picker.group_other": "Ostalo",
+  "picker.custom_title": "Vlastita veličina",
+  "picker.custom_width": "Širina (mm)",
+  "picker.custom_height": "Visina (mm)",
+  "picker.custom_empty": "Upišite mjeru.",
+  "picker.custom_not_a_number": "Upišite broj.",
+  "picker.custom_not_positive": "Mjera mora biti veća od nule.",
+  "picker.custom_out_of_range": "Dopušteno je {min}–{max} mm.",
 
   "editor.group_crop": "Kadriranje",
   "editor.group_tone": "Svjetlina i boja",

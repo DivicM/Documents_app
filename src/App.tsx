@@ -70,6 +70,34 @@ const HEAD_HEIGHT_MAX_MM = 60;
 const FONT_SCALE_MIN = 50;
 const FONT_SCALE_MAX = 200;
 
+/** The spec whose print size the user types in themselves. */
+const CUSTOM_SPEC_ID = "free-custom";
+/** Bounds for that size. Wide enough for anything that fits on A4. */
+const CUSTOM_MIN_MM = 20;
+const CUSTOM_MAX_MM = 200;
+
+/**
+ * Parse a typed size, or return why it is not one.
+ *
+ * Returns the number when the text is a usable size, otherwise the i18n key
+ * of the reason. Empty is its own case: while a field is being cleared it is
+ * not yet wrong, so it must not be scolded the way "-5" is.
+ */
+function parseCustomMm(text: string): { mm: number } | { errorKey: string } {
+  const trimmed = text.trim();
+  if (trimmed === "") return { errorKey: "picker.custom_empty" };
+
+  // Comma is the Croatian decimal separator, and the numeric keypad prints it.
+  const value = Number(trimmed.replace(",", "."));
+  // Rejects "12abc", "--", "1e5" oddities and anything Number() gives up on.
+  if (!Number.isFinite(value)) return { errorKey: "picker.custom_not_a_number" };
+  if (value <= 0) return { errorKey: "picker.custom_not_positive" };
+  if (value < CUSTOM_MIN_MM || value > CUSTOM_MAX_MM) {
+    return { errorKey: "picker.custom_out_of_range" };
+  }
+  return { mm: value };
+}
+
 /**
  * Longest edge of the copy used for detection, preview and editing.
  *
@@ -131,11 +159,29 @@ export default function App() {
   const [paperId, setPaperId] = useState<string>("10x15");
   const [photoWidthMm, setPhotoWidthMm] = useState(35);
   const [photoHeightMm, setPhotoHeightMm] = useState(45);
+  /**
+   * What is typed in the custom-size fields, as text.
+   *
+   * Kept separately from the numbers above so the field can be empty while
+   * being edited: binding an input straight to a number turns "clear the
+   * field" into the value 0, which cannot be deleted and is not a size anyone
+   * meant. The number is only updated when the text parses to a valid one.
+   */
+  const [customWidthText, setCustomWidthText] = useState("35");
+  const [customHeightText, setCustomHeightText] = useState("45");
   const [count, setCount] = useState(6);
   const [marginMm, setMarginMm] = useState(3);
   const [gutterMm, setGutterMm] = useState(2);
   const [alignTopLeft, setAlignTopLeft] = useState(false);
   const [cutMarks, setCutMarks] = useState(true);
+  /**
+   * Print a guide under each photo instead of around it.
+   *
+   * Separate from `cutMarks` rather than a mode of it, because the two are
+   * asked for independently: the full frame wins when both are on, since it
+   * already contains the bottom edge.
+   */
+  const [bottomMark, setBottomMark] = useState(false);
 
   const [layout, setLayout] = useState<Layout | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -215,8 +261,11 @@ export default function App() {
 
   // Settings that persist between sessions.
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [quarterTurn, setQuarterTurn] = useState(true);
-  const [turnPhoto, setTurnPhoto] = useState(true);
+  // Both off: photographs print upright, the way they are looked at. The
+  // solver no longer rotates for density either, so a sheet holds fewer
+  // copies but every face stands the right way up.
+  const [quarterTurn, setQuarterTurn] = useState(false);
+  const [turnPhoto, setTurnPhoto] = useState(false);
   const [settingsStatus, setSettingsStatus] = useState<string | null>(null);
   const [fontScale, setFontScale] = useState(100);
   const [startMaximized, setStartMaximized] = useState(false);
@@ -348,6 +397,10 @@ export default function App() {
       if (!s) return;
       setPhotoWidthMm(s.widthMm);
       setPhotoHeightMm(s.heightMm);
+      // Seed the custom fields from whatever was last selected, so switching
+      // to the custom format starts from a real size rather than stale text.
+      setCustomWidthText(String(s.widthMm));
+      setCustomHeightText(String(s.heightMm));
       // Head height stays at HEAD_HEIGHT_MM rather than following the spec:
       // the user frames the photograph themselves.
       setCount(s.defaultCount);
@@ -776,6 +829,9 @@ export default function App() {
     setHeadHeightMm(s.headHeightMm);
     setPhotoWidthMm(s.photoWidthMm);
     setPhotoHeightMm(s.photoHeightMm);
+    // The fields show the restored size, not what was typed before the undo.
+    setCustomWidthText(String(s.photoWidthMm));
+    setCustomHeightText(String(s.photoHeightMm));
     setCount(s.count);
     setMarginMm(s.marginMm);
     setGutterMm(s.gutterMm);
@@ -1150,6 +1206,7 @@ export default function App() {
             quarterTurn,
             turnPhoto,
             cutMarks,
+            bottomMark,
             photo,
           })
         : await ipc.printSheet({
@@ -1165,6 +1222,7 @@ export default function App() {
             quarterTurn,
             turnPhoto,
             cutMarks,
+            bottomMark,
             photo,
           });
       setStatus(t("print.sent", { jobId }));
@@ -1192,6 +1250,7 @@ export default function App() {
     quarterTurn,
     turnPhoto,
     cutMarks,
+    bottomMark,
   ]);
 
   const onSavePreset = async () => {
@@ -1234,6 +1293,9 @@ export default function App() {
       setSpecId(p.specId);
       setPhotoWidthMm(p.photoWidthMm);
       setPhotoHeightMm(p.photoHeightMm);
+      // A preset can carry the custom format, so the fields must show its size.
+      setCustomWidthText(String(p.photoWidthMm));
+      setCustomHeightText(String(p.photoHeightMm));
       setHeadHeightMm(p.headHeightMm);
       setPaperId(p.paperId);
       setCount(p.count);
@@ -1273,11 +1335,38 @@ export default function App() {
   const rotated = layout?.placements[0]?.rotated ?? false;
 
   /** Whether the current step is complete enough to move on. */
+  const customWidth = useMemo(() => parseCustomMm(customWidthText), [customWidthText]);
+  const customHeight = useMemo(() => parseCustomMm(customHeightText), [customHeightText]);
+
+  /**
+   * Accept the typed text, and commit it as the print size when it is valid.
+   *
+   * The text is always kept, so a half-typed or empty field is not fought
+   * with; the number behind it simply stops following until the text makes
+   * sense again. That leaves the last good size in place rather than a zero.
+   */
+  const onCustomWidth = useCallback((text: string) => {
+    setCustomWidthText(text);
+    const parsed = parseCustomMm(text);
+    if ("mm" in parsed) setPhotoWidthMm(parsed.mm);
+  }, []);
+
+  const onCustomHeight = useCallback((text: string) => {
+    setCustomHeightText(text);
+    const parsed = parseCustomMm(text);
+    if ("mm" in parsed) setPhotoHeightMm(parsed.mm);
+  }, []);
+
   const canAdvance =
     step === STEP_PICK
       ? image !== null
       : step === STEP_FORMAT
-        ? specId !== ""
+        ? // A custom format must have two usable sizes before moving on,
+          // otherwise the next step would lay out the last valid size while
+          // the field on screen says something else.
+          specId !== "" &&
+          (specId !== CUSTOM_SPEC_ID ||
+            ("mm" in customWidth && "mm" in customHeight))
         : step === STEP_EDIT
           ? crop !== null
           : false;
@@ -1354,9 +1443,64 @@ export default function App() {
       )}
 
       {step === STEP_FORMAT && (
-        <div className="step-pane step-pane-narrow">
-          <FormatPicker specs={specs} selectedId={specId} onSelect={onSelectSpec} />
-          {error && <div className="error">{error}</div>}
+        // A row, so the size panel sits in the space beside the list rather
+        // than inside it: the list itself is left exactly as it was.
+        <div className="format-row">
+          <div className="step-pane format-list">
+            <FormatPicker
+              specs={specs}
+              selectedId={specId}
+              onSelect={onSelectSpec}
+              // Shown on the custom card so it reflects what is typed in the
+              // panel beside the list.
+              customWidthMm={photoWidthMm}
+              customHeightMm={photoHeightMm}
+            />
+            {error && <div className="error">{error}</div>}
+          </div>
+
+          {/* The custom size is the print size itself, which is the state
+              every other format sets when it is selected. Typing here
+              therefore feeds the layout, the preview and the print path
+              without any of them needing to know about custom formats. */}
+          {specId === CUSTOM_SPEC_ID && (
+            <aside className="custom-size">
+              <h3>{t("picker.custom_title")}</h3>
+              <label>
+                {t("picker.custom_width")}
+                {/* Text rather than number: a number input cannot hold an
+                    empty string, so clearing it would leave a 0 behind. */}
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  aria-invalid={"errorKey" in customWidth}
+                  value={customWidthText}
+                  onChange={(e) => onCustomWidth(e.target.value)}
+                />
+              </label>
+              {"errorKey" in customWidth && (
+                <p className="custom-size-error">
+                  {t(customWidth.errorKey, { min: CUSTOM_MIN_MM, max: CUSTOM_MAX_MM })}
+                </p>
+              )}
+
+              <label>
+                {t("picker.custom_height")}
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  aria-invalid={"errorKey" in customHeight}
+                  value={customHeightText}
+                  onChange={(e) => onCustomHeight(e.target.value)}
+                />
+              </label>
+              {"errorKey" in customHeight && (
+                <p className="custom-size-error">
+                  {t(customHeight.errorKey, { min: CUSTOM_MIN_MM, max: CUSTOM_MAX_MM })}
+                </p>
+              )}
+            </aside>
+          )}
         </div>
       )}
 
@@ -1964,6 +2108,7 @@ export default function App() {
                 : undefined
             }
             showCutMarks={cutMarks}
+            showBottomMark={bottomMark && !cutMarks}
             image={composited ?? working?.canvas ?? null}
             crop={crop}
             rotationDeg={rotationDeg}
@@ -2069,6 +2214,32 @@ export default function App() {
           >
             {printing ? t("print.sending") : t("print.button")}
           </button>
+
+          {/* Beside the print button as well as in the settings: whether to
+              print the frame is decided per job, at the moment of printing,
+              rather than being a setting to go and find. Both controls drive
+              the same state, so they always agree. */}
+          <label className="checkbox print-option">
+            <input
+              type="checkbox"
+              checked={cutMarks}
+              onChange={(e) => setCutMarks(e.target.checked)}
+            />
+            {t("layout.cut_marks")}
+          </label>
+
+          {/* Disabled while the full frame is on, because that frame already
+              draws the bottom edge: leaving it clickable would offer a choice
+              that changes nothing. */}
+          <label className="checkbox print-option">
+            <input
+              type="checkbox"
+              checked={bottomMark && !cutMarks}
+              disabled={cutMarks}
+              onChange={(e) => setBottomMark(e.target.checked)}
+            />
+            {t("layout.bottom_mark")}
+          </label>
         </section>
       </div>
 

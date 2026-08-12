@@ -13,6 +13,8 @@ interface Props {
   /** Hardware margin drawn as a dashed guide, so the user sees the dead zone. */
   hardwareMarginMm?: { left: number; top: number; right: number; bottom: number };
   showCutMarks: boolean;
+  /** Guide under each photo only. Ignored when the full frame is drawn. */
+  showBottomMark: boolean;
   /** The loaded photo. Without one the sheet shows empty frames. */
   /** A canvas as well as an image; the composited copy is produced on one. */
   image?: HTMLImageElement | HTMLCanvasElement | null;
@@ -37,6 +39,7 @@ export function SheetPreview({
   paperHeightMm,
   hardwareMarginMm,
   showCutMarks,
+  showBottomMark,
   image,
   crop,
   rotationDeg = 0,
@@ -112,43 +115,6 @@ export function SheetPreview({
     if (!layout) return;
 
     for (const p of layout.placements) {
-      if (showCutMarks) {
-        ctx.save();
-        // Matches CUT_MARK_GREY and CUT_MARK_LENGTH_MM in render.rs, so the
-        // preview shows the same faint guides that will be printed.
-        ctx.strokeStyle = "#d2d2d2";
-        ctx.lineWidth = 0.2;
-        const len = 2.5;
-        // Corner marks sit outside the photo so they can be cut away.
-        const corners: Array<[number, number, number, number]> = [
-          [p.xMm - len, p.yMm, p.xMm, p.yMm],
-          [p.xMm, p.yMm - len, p.xMm, p.yMm],
-          [p.xMm + p.widthMm, p.yMm, p.xMm + p.widthMm + len, p.yMm],
-          [p.xMm + p.widthMm, p.yMm - len, p.xMm + p.widthMm, p.yMm],
-          [p.xMm - len, p.yMm + p.heightMm, p.xMm, p.yMm + p.heightMm],
-          [p.xMm, p.yMm + p.heightMm, p.xMm, p.yMm + p.heightMm + len],
-          [
-            p.xMm + p.widthMm,
-            p.yMm + p.heightMm,
-            p.xMm + p.widthMm + len,
-            p.yMm + p.heightMm,
-          ],
-          [
-            p.xMm + p.widthMm,
-            p.yMm + p.heightMm,
-            p.xMm + p.widthMm,
-            p.yMm + p.heightMm + len,
-          ],
-        ];
-        ctx.beginPath();
-        for (const [x1, y1, x2, y2] of corners) {
-          ctx.moveTo(x1, y1);
-          ctx.lineTo(x2, y2);
-        }
-        ctx.stroke();
-        ctx.restore();
-      }
-
       if (image && crop) {
         drawPhoto(ctx, image, crop, rotationDeg, p, turnPhoto);
       } else {
@@ -156,9 +122,35 @@ export function SheetPreview({
         ctx.fillRect(p.xMm, p.yMm, p.widthMm, p.heightMm);
       }
 
-      ctx.strokeStyle = "#8e959e";
-      ctx.lineWidth = 0.25;
-      ctx.strokeRect(p.xMm, p.yMm, p.widthMm, p.heightMm);
+      // Only when a guide is actually going to be printed. The border used to
+      // be drawn unconditionally, which showed a frame around every photo even
+      // with cut marks switched off and so misrepresented the print.
+      if (showCutMarks || showBottomMark) {
+        ctx.save();
+        // Mirrors CUT_MARK_GREY and CUT_MARK_THICKNESS_MM in render.rs: a
+        // guide just outside the photo, not the corner ticks this used to be.
+        ctx.strokeStyle = "#c6c6c6";
+        ctx.lineWidth = 0.35;
+        // Stroke straddles the path, so offsetting by half the width puts the
+        // guide wholly outside the photo, where the printer draws it.
+        const off = ctx.lineWidth / 2;
+        if (showCutMarks) {
+          ctx.strokeRect(
+            p.xMm - off,
+            p.yMm - off,
+            p.widthMm + ctx.lineWidth,
+            p.heightMm + ctx.lineWidth,
+          );
+        } else {
+          // Bottom edge alone, spanning just the photo, as the renderer does.
+          const y = p.yMm + p.heightMm + off;
+          ctx.beginPath();
+          ctx.moveTo(p.xMm, y);
+          ctx.lineTo(p.xMm + p.widthMm, y);
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
     }
   }, [
     layout,
@@ -166,6 +158,7 @@ export function SheetPreview({
     paperHeightMm,
     hardwareMarginMm,
     showCutMarks,
+    showBottomMark,
     image,
     crop,
     rotationDeg,

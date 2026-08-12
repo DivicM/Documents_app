@@ -183,6 +183,50 @@
     },
 
     {
+      "id": "generic-30x40",
+      "confidence": "baseline",
+      "display_name": {
+        "hr": "Mali format 3×4 cm (bez provjera)",
+        "en": "Small format 3x4 cm (no checks)"
+      },
+      "_note": "Kao i 25×30: uobičajena veličina bez propisa iza sebe, pa nema geometrije ni provjera.",
+      "print": {
+        "width_mm": 30,
+        "height_mm": 40,
+        "source": "baseline",
+        "min_dpi": 300,
+        "preferred_dpi": 600
+      },
+      "layout_defaults": {
+        "paper": "10x15cm",
+        "count": 8,
+        "cut_marks": true
+      }
+    },
+
+    {
+      "id": "generic-40x60",
+      "confidence": "baseline",
+      "display_name": {
+        "hr": "Format 4×6 cm (bez provjera)",
+        "en": "Format 4x6 cm (no checks)"
+      },
+      "_note": "Kao i ostali generički formati: bez propisa, pa bez provjera.",
+      "print": {
+        "width_mm": 40,
+        "height_mm": 60,
+        "source": "baseline",
+        "min_dpi": 300,
+        "preferred_dpi": 600
+      },
+      "layout_defaults": {
+        "paper": "10x15cm",
+        "count": 4,
+        "cut_marks": true
+      }
+    },
+
+    {
       "id": "free-custom",
       "confidence": "baseline",
       "display_name": {
