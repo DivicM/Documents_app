@@ -21,3 +21,6 @@ Thumbs.db
 # Machine-local cargo settings (contains an absolute target-dir path).
 # See .cargo/config.toml.example for why it exists and how to recreate it.
 /.cargo/config.toml
+
+# Claude Code settings and skills. Local tooling, not part of the project.
+/.claude
