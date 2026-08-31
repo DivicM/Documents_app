@@ -40,11 +40,23 @@ pub fn preload(state: &DetectorState) {
 ///
 /// In development they sit in the repository root; in an installed build they
 /// are next to the binary. Both are checked so the app runs either way.
+///
+/// The bundler also has a say. The paths in `tauri.conf.json` start with `../`,
+/// because the models sit in the repository root rather than under `src-tauri`,
+/// and a resource whose source escapes the config directory is placed under
+/// `_up_/` in the installed layout. That is why `_up_` is searched too: without
+/// it an installed build finds nothing, while a development build — where the
+/// working directory happens to contain `models/` — works, so the difference
+/// only ever shows up after installing.
 pub(crate) fn resource_path(relative: &str) -> Option<std::path::PathBuf> {
     let mut candidates = Vec::new();
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
             candidates.push(dir.join(relative));
+            candidates.push(dir.join("_up_").join(relative));
+            // Tauri v1 laid resources out under `resources/`.
+            candidates.push(dir.join("resources").join(relative));
+            candidates.push(dir.join("resources").join("_up_").join(relative));
         }
     }
     if let Ok(cwd) = std::env::current_dir() {

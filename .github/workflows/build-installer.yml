@@ -39,6 +39,34 @@ jobs:
       - name: Build installer
         run: npm run tauri build
 
+      # The models and the ONNX runtime are found by walking outward from the
+      # executable, so a bundling change that moves them breaks an installed
+      # build while a development build keeps working. Fail here instead.
+      - name: Check the resources were bundled
+        shell: pwsh
+        run: |
+          $dir = "target/release"
+          $wanted = @(
+            "models/face_detection_yunet_2023mar.onnx",
+            "models/u2netp.onnx",
+            "runtime/onnxruntime.dll"
+          )
+          $missing = @()
+          foreach ($w in $wanted) {
+            $leaf = Split-Path $w -Leaf
+            $hit = Get-ChildItem $dir -Recurse -Filter $leaf -ErrorAction SilentlyContinue |
+                   Select-Object -First 1
+            if ($hit) {
+              Write-Host "found $leaf at $($hit.FullName)"
+            } else {
+              $missing += $w
+            }
+          }
+          if ($missing) {
+            Write-Host "::error::not bundled: $($missing -join ', ')"
+            exit 1
+          }
+
       - uses: actions/upload-artifact@v4
         with:
           name: fotografije-za-dokumente-installer
