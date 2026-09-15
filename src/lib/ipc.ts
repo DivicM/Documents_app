@@ -10,10 +10,15 @@ import { invoke } from "@tauri-apps/api/core";
 /**
  * Send raw pixels instead of a JSON number array.
  *
- * Tauri turns an ArrayBuffer body into `InvokeBody::Raw`, which crosses the
+ * Tauri turns a byte-array body into `InvokeBody::Raw`, which crosses the
  * boundary as bytes. Passing the same pixels as a number array inflates a
  * 10.7MB photo into 32MB of JSON text and costs roughly two seconds to encode
  * and parse — far more than the work being asked for.
+ *
+ * The payload is the `Uint8Array` itself rather than its `.buffer`. Tauri
+ * decides between a raw and a JSON body by checking the payload's type, and an
+ * `ArrayBuffer` is not always recognised there; when the check misses, the
+ * pixels are serialised as JSON and the command rejects them as not raw.
  *
  * Dimensions travel as headers because the body carries only pixels.
  */
@@ -27,7 +32,7 @@ async function invokeWithPixels<T>(
   // `slice()` yields a copy whose buffer is exactly this image, which matters
   // when the canvas hands back a view into a larger buffer.
   const bytes = new Uint8Array(rgba.buffer, rgba.byteOffset, rgba.byteLength).slice();
-  return invoke<T>(cmd, bytes.buffer as ArrayBuffer, {
+  return invoke<T>(cmd, bytes, {
     headers: {
       "x-width": String(width),
       "x-height": String(height),
@@ -745,7 +750,8 @@ async function invokePrint(
   out.set(json, 4);
   out.set(pixels, 4 + json.byteLength);
 
-  return invoke<number>(cmd, out.buffer as ArrayBuffer);
+  // The array itself, not its `.buffer`: see `invokeWithPixels`.
+  return invoke<number>(cmd, out);
 }
 
 export async function printMixedSheet(args: {
