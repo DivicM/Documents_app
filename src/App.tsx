@@ -641,7 +641,7 @@ export default function App() {
       // Everything on this screen works from the reduced copy. The
       // full-resolution pixels are read only when printing.
       const work = toWorkingSize(img);
-      if (!work) throw new Error(t("error.image.decode_failed"));
+      if (!work) throw new Error(t("error.image.canvas_unavailable"));
       imagePixels.current = work;
       setWorking(work);
 

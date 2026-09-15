@@ -179,6 +179,16 @@ pub fn detect_face(
     for px in rgba.chunks_exact(4) {
         rgb.extend_from_slice(&px[..3]);
     }
+    // `from_raw` only reports failure as `None`, which says nothing about why.
+    // Report the sizes instead: the length check above already passed, so a
+    // mismatch here means the conversion produced the wrong number of bytes.
+    let needed = width as usize * height as usize * 3;
+    if rgb.len() != needed {
+        return Err(UiError::with(
+            "error.image.size_mismatch",
+            serde_json::json!({ "expected": needed, "got": rgb.len() }),
+        ));
+    }
     let img = image::RgbImage::from_raw(width, height, rgb)
         .ok_or_else(|| UiError::new("error.image.decode_failed"))?;
 

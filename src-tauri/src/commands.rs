@@ -46,10 +46,14 @@ pub fn header_u32(req: &tauri::ipc::Request<'_>, name: &str) -> CmdResult<u32> {
 }
 
 /// Borrow the raw body of a request, rejecting a JSON one.
+///
+/// A distinct key from a decode failure: this means the pixels arrived as JSON
+/// rather than bytes, which is a transport problem and not a bad image, and the
+/// two are otherwise indistinguishable from the message alone.
 pub fn raw_body<'a>(req: &'a tauri::ipc::Request<'_>) -> CmdResult<&'a [u8]> {
     match req.body() {
         tauri::ipc::InvokeBody::Raw(bytes) => Ok(bytes),
-        tauri::ipc::InvokeBody::Json(_) => Err(UiError::new("error.image.decode_failed")),
+        tauri::ipc::InvokeBody::Json(_) => Err(UiError::new("error.image.not_raw")),
     }
 }
 
