@@ -4,12 +4,14 @@ name: Build installer
 # freshly linked unsigned build scripts on some Windows 11 machines, which stops
 # a local `tauri build` before it starts; the runners have no such policy.
 #
-# Run it from the Actions tab ("Run workflow"), or by pushing a v* tag, which
-# also publishes the installer as a release.
+# Runs on every push to main, from the Actions tab ("Run workflow"), or on a v*
+# tag, which also publishes the installer as a release.
 
 on:
   workflow_dispatch:
   push:
+    branches:
+      - main
     tags:
       - "v*"
 
