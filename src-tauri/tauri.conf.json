@@ -32,9 +32,9 @@
     "targets": ["nsis"],
     "icon": ["icons/icon.ico"],
     "resources": {
-      "../models/face_detection_yunet_2023mar.onnx": "models/",
-      "../models/u2netp.onnx": "models/",
-      "../runtime/onnxruntime.dll": "runtime/"
+      "../models/face_detection_yunet_2023mar.onnx": "models/face_detection_yunet_2023mar.onnx",
+      "../models/u2netp.onnx": "models/u2netp.onnx",
+      "../runtime/onnxruntime.dll": "runtime/onnxruntime.dll"
     },
     "windows": {
       "nsis": {

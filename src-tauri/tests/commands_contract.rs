@@ -268,6 +268,37 @@ fn tauri_config_forbids_outbound_connections() {
     }
 }
 
+/// Bundled resources must name their destination file, not just a directory.
+///
+/// For a single file, a destination ending in `/` is taken literally: Tauri
+/// copies `../models/x.onnx` to a *file* called `models`, so the installed
+/// build has a `models` file where the code expects a `models` directory and
+/// finds no model at all. The bundler's own source notes this as a confusing
+/// special case. Development is unaffected, since it reads the repository
+/// tree, so only an installed build shows it.
+#[test]
+fn bundled_resources_name_their_destination_file() {
+    let conf = read(&repo_root().join("src-tauri").join("tauri.conf.json"));
+    let value: serde_json::Value = serde_json::from_str(&conf).expect("config is not valid JSON");
+
+    let resources = value["bundle"]["resources"]
+        .as_object()
+        .expect("resources must be a source-to-destination map");
+
+    for (source, dest) in resources {
+        let dest = dest.as_str().expect("destination must be a string");
+        assert!(
+            !dest.ends_with('/'),
+            "{source} maps to {dest:?}, a directory; name the destination file instead"
+        );
+        let source_name = source.rsplit('/').next().unwrap();
+        assert!(
+            dest.ends_with(source_name),
+            "{source} maps to {dest:?}, which would rename it"
+        );
+    }
+}
+
 /// The bundle must not enable an updater, which would phone home on startup.
 #[test]
 fn no_updater_configured() {
