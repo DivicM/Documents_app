@@ -231,6 +231,13 @@ fn error_translations_have_no_unfilled_placeholders() {
 
 /// The offline guarantee must be declared in the Tauri config, not merely
 /// intended. This is the verifiable half of "no network calls".
+///
+/// `connect-src` cannot be `'none'`: Tauri sends a raw request body through
+/// `fetch` to the IPC endpoint, and blocking it makes the webview fall back to
+/// `postMessage`, which carries JSON only — so every photo arrives as a number
+/// array and the pixel commands reject it. The two IPC origins are local to the
+/// application; what matters for the guarantee is that no outside origin is
+/// reachable.
 #[test]
 fn tauri_config_forbids_outbound_connections() {
     let conf = read(&repo_root().join("src-tauri").join("tauri.conf.json"));
@@ -238,13 +245,27 @@ fn tauri_config_forbids_outbound_connections() {
 
     assert!(compact.contains("\"csp\":"), "no CSP declared");
     assert!(
-        compact.contains("connect-src'none'"),
-        "CSP must set connect-src 'none' so the webview cannot call out"
-    );
-    assert!(
         compact.contains("default-src'self'"),
         "CSP must set default-src 'self'"
     );
+
+    let csp = conf
+        .lines()
+        .find(|l| l.contains("\"csp\""))
+        .expect("no CSP line");
+    let connect = csp
+        .split(';')
+        .find(|d| d.trim_start_matches(|c: char| !c.is_alphabetic()).starts_with("connect-src"))
+        .expect("CSP must declare connect-src rather than inherit default-src");
+
+    // Only the local IPC endpoints; anything else would be a way out.
+    for source in connect.split_whitespace().skip(1) {
+        let source = source.trim_end_matches(['"', ';']);
+        assert!(
+            matches!(source, "ipc:" | "http://ipc.localhost" | "'self'"),
+            "connect-src allows {source}, which is not a local IPC origin"
+        );
+    }
 }
 
 /// The bundle must not enable an updater, which would phone home on startup.
