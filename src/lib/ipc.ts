@@ -8,6 +8,32 @@
 import { invoke } from "@tauri-apps/api/core";
 
 /**
+ * What the last pixel-carrying call did, for the diagnostics panel.
+ *
+ * Whether a body crosses as bytes or as JSON is decided inside Tauri's injected
+ * internals, which the page cannot inspect, so the only way to tell is to send
+ * something and see how it arrives. A failing install is the only place this
+ * has shown up, and it has no console, hence recording it here.
+ */
+export interface IpcAttempt {
+  form: string;
+  ok: boolean;
+  detail: string;
+}
+
+let lastAttempts: IpcAttempt[] = [];
+
+export function ipcDiagnostics(): IpcAttempt[] {
+  return lastAttempts;
+}
+
+/** True when the command refused the body for not being raw bytes. */
+function isNotRaw(e: unknown): boolean {
+  return !!e && typeof e === "object" && "key" in e &&
+    (e as { key?: unknown }).key === "error.image.not_raw";
+}
+
+/**
  * Send raw pixels instead of a JSON number array.
  *
  * Tauri turns a byte-array body into `InvokeBody::Raw`, which crosses the
@@ -15,10 +41,10 @@ import { invoke } from "@tauri-apps/api/core";
  * 10.7MB photo into 32MB of JSON text and costs roughly two seconds to encode
  * and parse — far more than the work being asked for.
  *
- * The payload is the `Uint8Array` itself rather than its `.buffer`. Tauri
- * decides between a raw and a JSON body by checking the payload's type, and an
- * `ArrayBuffer` is not always recognised there; when the check misses, the
- * pixels are serialised as JSON and the command rejects them as not raw.
+ * Which payload shape is recognised as raw turns out to vary between webview
+ * builds: the same code sends bytes in development and JSON in an installed
+ * build on another machine. Rather than pick one shape and hope, try each in
+ * turn and keep what worked, recording the outcomes for the diagnostics panel.
  *
  * Dimensions travel as headers because the body carries only pixels.
  */
@@ -32,13 +58,48 @@ async function invokeWithPixels<T>(
   // `slice()` yields a copy whose buffer is exactly this image, which matters
   // when the canvas hands back a view into a larger buffer.
   const bytes = new Uint8Array(rgba.buffer, rgba.byteOffset, rgba.byteLength).slice();
-  return invoke<T>(cmd, bytes, {
-    headers: {
-      "x-width": String(width),
-      "x-height": String(height),
-      ...extraHeaders,
-    },
-  });
+  const headers = {
+    "x-width": String(width),
+    "x-height": String(height),
+    ...extraHeaders,
+  };
+
+  const forms: Array<[string, unknown]> = [
+    ["Uint8Array", bytes],
+    ["ArrayBuffer", bytes.buffer],
+    ["number[]", Array.from(bytes)],
+  ];
+
+  const attempts: IpcAttempt[] = [];
+  let lastError: unknown;
+
+  for (const [form, payload] of forms) {
+    try {
+      const r = await invoke<T>(cmd, payload as never, { headers });
+      attempts.push({ form, ok: true, detail: "prihvaćeno" });
+      lastAttempts = attempts;
+      return r;
+    } catch (e) {
+      lastError = e;
+      attempts.push({
+        form,
+        ok: false,
+        detail: isNotRaw(e) ? "stiglo kao JSON" : describeError(e),
+      });
+      // Only a not-raw rejection means the shape was wrong; anything else is a
+      // real failure and retrying in another shape would just repeat it.
+      if (!isNotRaw(e)) break;
+    }
+  }
+
+  lastAttempts = attempts;
+  throw lastError;
+}
+
+function describeError(e: unknown): string {
+  if (e && typeof e === "object" && "key" in e) return String((e as { key: unknown }).key);
+  if (e instanceof Error) return e.message;
+  return String(e);
 }
 
 /**
@@ -750,8 +811,17 @@ async function invokePrint(
   out.set(json, 4);
   out.set(pixels, 4 + json.byteLength);
 
-  // The array itself, not its `.buffer`: see `invokeWithPixels`.
-  return invoke<number>(cmd, out);
+  // Same payload-shape uncertainty as `invokeWithPixels`, so the same fallback.
+  let lastError: unknown;
+  for (const payload of [out, out.buffer, Array.from(out)]) {
+    try {
+      return await invoke<number>(cmd, payload as never);
+    } catch (e) {
+      lastError = e;
+      if (!isNotRaw(e)) break;
+    }
+  }
+  throw lastError;
 }
 
 export async function printMixedSheet(args: {

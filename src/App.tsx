@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Diagnostics } from "./components/Diagnostics";
 import { DropZone } from "./components/DropZone";
 import { FormatPicker } from "./components/FormatPicker";
 import { PhotoCanvas, type Anchors, type HandleName } from "./components/PhotoCanvas";
@@ -1438,6 +1439,7 @@ export default function App() {
           <DropZone onPick={(f) => void onPickImage(f)} loadedName={imageName} />
           {detecting && <p className="status">{t("face.detecting")}</p>}
           {error && <div className="error">{error}</div>}
+          {error && <Diagnostics />}
           {status && <div className="status">{status}</div>}
         </div>
       )}
@@ -2087,6 +2089,7 @@ export default function App() {
           )}
 
           {error && <div className="error">{error}</div>}
+          {error && <Diagnostics />}
           {status && <div className="status">{status}</div>}
         </section>
 
