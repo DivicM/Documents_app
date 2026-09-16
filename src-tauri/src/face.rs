@@ -49,6 +49,10 @@ pub fn preload(state: &DetectorState) {
 /// working directory happens to contain `models/` — works, so the difference
 /// only ever shows up after installing.
 pub(crate) fn resource_path(relative: &str) -> Option<std::path::PathBuf> {
+    resource_candidates(relative).into_iter().find(|p| p.exists())
+}
+
+fn resource_candidates(relative: &str) -> Vec<std::path::PathBuf> {
     let mut candidates = Vec::new();
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
@@ -66,7 +70,46 @@ pub(crate) fn resource_path(relative: &str) -> Option<std::path::PathBuf> {
             candidates.push(parent.join(relative));
         }
     }
-    candidates.into_iter().find(|p| p.exists())
+    candidates
+}
+
+/// Where the file was looked for, and what is actually beside the executable.
+///
+/// A missing resource is only ever seen in an installed build, where there is
+/// no console and no way to look around the install directory, so the message
+/// has to carry the evidence itself.
+fn missing_resource(relative: &str) -> UiError {
+    let looked: Vec<String> = resource_candidates(relative)
+        .iter()
+        .map(|p| p.display().to_string())
+        .collect();
+
+    let beside_exe = std::env::current_exe()
+        .ok()
+        .and_then(|e| e.parent().map(std::path::Path::to_path_buf))
+        .map(|dir| match std::fs::read_dir(&dir) {
+            Ok(entries) => {
+                let mut names: Vec<String> = entries
+                    .filter_map(Result::ok)
+                    .map(|e| {
+                        let name = e.file_name().to_string_lossy().into_owned();
+                        if e.path().is_dir() { format!("{name}/") } else { name }
+                    })
+                    .collect();
+                names.sort();
+                names.join(", ")
+            }
+            Err(e) => format!("(nije moguće čitati: {e})"),
+        })
+        .unwrap_or_else(|| "(nepoznato)".into());
+
+    UiError::with(
+        "error.model.not_found",
+        serde_json::json!({
+            "looked": looked.join("\n"),
+            "beside_exe": beside_exe,
+        }),
+    )
 }
 
 /// Point the ONNX Runtime loader at the bundled library.
@@ -196,7 +239,7 @@ pub fn detect_face(
     if guard.is_none() {
         ensure_runtime_path();
         let model = resource_path("models/face_detection_yunet_2023mar.onnx")
-            .ok_or_else(|| UiError::new("error.model.not_found"))?;
+            .ok_or_else(|| missing_resource("models/face_detection_yunet_2023mar.onnx"))?;
         let detector = FaceDetector::from_path(&model).map_err(|e| {
             UiError::with("error.model.load_failed", serde_json::json!({ "detail": e.to_string() }))
         })?;

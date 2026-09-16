@@ -79,7 +79,8 @@ const hr: Record<string, string> = {
   "error.image.decode_failed": "Nije moguće pročitati sliku.",
   "error.image.canvas_unavailable": "Grafički prikaz nije dostupan.",
   "error.image.not_raw": "Slika nije prenesena u ispravnom obliku.",
-  "error.model.not_found": "Model za prepoznavanje lica nije pronađen.",
+  "error.model.not_found":
+    "Model za prepoznavanje lica nije pronađen.\n\nTraženo na:\n{looked}\n\nUz aplikaciju se nalazi:\n{beside_exe}",
   "error.model.load_failed": "Nije moguće učitati model. ({detail})",
   "error.detect.failed": "Prepoznavanje lica nije uspjelo. ({detail})",
   "error.internal.lock": "Interna greška.",
