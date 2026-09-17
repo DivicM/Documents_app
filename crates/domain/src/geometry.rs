@@ -197,6 +197,13 @@ pub enum CropError {
 /// Works entirely in source pixels: the ratio between the head in pixels and
 /// the head in millimetres fixes the scale, and the rest follows from the
 /// photo's aspect ratio.
+///
+/// The head is measured along the chin-to-crown line rather than by the
+/// vertical difference alone. The printed crop is straightened about that same
+/// line, so on a tilted head the vertical difference is the shorter projection
+/// of it — measuring that way prints the head smaller than asked for and
+/// offsets the frame, which reads as every photo coming out slightly askew.
+/// The two agree exactly when the head is upright.
 pub fn solve_crop(
     anchors: &HeadAnchors,
     target: &CropTarget,
@@ -209,7 +216,7 @@ pub fn solve_crop(
         return Err(CropError::InvalidTarget);
     }
 
-    let head_px = (anchors.chin.y - anchors.crown.y).abs();
+    let head_px = anchors.chin.distance_to(anchors.crown);
     if head_px < 1e-6 {
         return Err(CropError::DegenerateHead);
     }
@@ -220,7 +227,8 @@ pub fn solve_crop(
     let crop_w = target.photo_width_mm * px_per_mm;
     let crop_h = target.photo_height_mm * px_per_mm;
 
-    // Horizontal: centre on the head.
+    // Horizontal: centre on the head axis, which is the midpoint of chin and
+    // crown whatever the tilt.
     let cx = (anchors.chin.x + anchors.crown.x) / 2.0;
     let x = cx - crop_w / 2.0;
 
@@ -477,6 +485,51 @@ mod tests {
         // The head must occupy exactly head_height_mm of the crop's height.
         let head_fraction = 300.0 / crop.height;
         assert!((head_fraction - 33.0 / 45.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_tilted_head_is_measured_along_its_own_axis() {
+        // Regression: the head used to be measured as chin.y - crown.y, the
+        // vertical projection, while the printed crop is straightened about the
+        // chin-to-crown line. On a tilted head the projection is shorter, so
+        // the head printed smaller than asked for and the frame sat off-centre
+        // — every photo came out looking slightly askew.
+        //
+        // A 300px head tilted 20 degrees: the same crop as an upright one.
+        let angle: f64 = 20f64.to_radians();
+        let anchors = HeadAnchors {
+            chin: Point::new(500.0 + 150.0 * angle.sin(), 550.0 + 150.0 * angle.cos()),
+            crown: Point::new(500.0 - 150.0 * angle.sin(), 550.0 - 150.0 * angle.cos()),
+            estimated: true,
+        };
+        // The vertical difference is visibly shorter than the head itself.
+        let vertical_only = anchors.chin.y - anchors.crown.y;
+        assert!(
+            vertical_only < 290.0,
+            "the projection should be well under 300px here, got {vertical_only}"
+        );
+
+        let target = CropTarget {
+            photo_width_mm: 35.0,
+            photo_height_mm: 45.0,
+            head_height_mm: 33.0,
+            chin_from_bottom_mm: None,
+        };
+        let image = Rect::new(0.0, 0.0, 2000.0, 2000.0);
+        let crop = solve_crop(&anchors, &target, &image).unwrap();
+
+        // Scale comes from the true 300px head, not its projection.
+        let px_per_mm = 300.0 / 33.0;
+        assert!(
+            (crop.width - 35.0 * px_per_mm).abs() < 1e-6,
+            "width {} should match an upright head's {}",
+            crop.width,
+            35.0 * px_per_mm
+        );
+        assert!((crop.height - 45.0 * px_per_mm).abs() < 1e-6);
+
+        // Still centred on the head axis.
+        assert!((crop.x + crop.width / 2.0 - 500.0).abs() < 1e-6);
     }
 
     #[test]

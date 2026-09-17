@@ -664,6 +664,38 @@ button.small {
   transition: border-color 0.15s, background 0.15s;
 }
 
+/* With a photo loaded the preview below is what matters, so the drop zone
+   gives up most of its height rather than pushing the picture off-screen. */
+.step-pane-narrow:has(.loaded-preview) .dropzone {
+  min-height: 0;
+  padding: 16px;
+}
+
+.loaded-preview {
+  margin: 16px 0 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+.loaded-preview canvas {
+  max-width: 100%;
+  /* Tall enough to judge the photograph by, short enough that the step's
+     buttons stay reachable without scrolling on a laptop screen. */
+  max-height: 60vh;
+  width: auto;
+  height: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+}
+
+.loaded-preview figcaption {
+  font-size: 0.857em;
+  color: var(--muted);
+}
+
 .dropzone-active {
   border-color: var(--accent);
   background: var(--accent-soft);

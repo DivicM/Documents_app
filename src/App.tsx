@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Diagnostics } from "./components/Diagnostics";
 import { DropZone } from "./components/DropZone";
 import { FormatPicker } from "./components/FormatPicker";
+import { LoadedPreview } from "./components/LoadedPreview";
 import { PhotoCanvas, type Anchors, type HandleName } from "./components/PhotoCanvas";
 import { PhotoPreview } from "./components/PhotoPreview";
 import { Section } from "./components/Section";
@@ -1437,6 +1438,7 @@ export default function App() {
       {step === STEP_PICK && (
         <div className="step-pane step-pane-narrow">
           <DropZone onPick={(f) => void onPickImage(f)} loadedName={imageName} />
+          {working && <LoadedPreview canvas={working.canvas} name={imageName} />}
           {detecting && <p className="status">{t("face.detecting")}</p>}
           {error && <div className="error">{error}</div>}
           {error && <Diagnostics />}
