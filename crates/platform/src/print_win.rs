@@ -10,26 +10,62 @@ use crate::print::{
     PrinterInfo, Result,
 };
 
-use windows::core::PCWSTR;
+use windows::core::{PCWSTR, PWSTR};
 use windows::Win32::Graphics::Gdi::{
     CreateDCW, DeleteDC, GetDeviceCaps, StretchDIBits, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
-    DIB_RGB_COLORS, GET_DEVICE_CAPS_INDEX, HDC, HORZRES, LOGPIXELSX, LOGPIXELSY, PHYSICALHEIGHT,
-    PHYSICALOFFSETX, PHYSICALOFFSETY, PHYSICALWIDTH, SRCCOPY, VERTRES,
+    DEVMODEW, DIB_RGB_COLORS, DM_OUT_BUFFER, DM_PRINTQUALITY, DM_YRESOLUTION,
+    GET_DEVICE_CAPS_INDEX, HDC, HORZRES, LOGPIXELSX, LOGPIXELSY, PHYSICALHEIGHT, PHYSICALOFFSETX,
+    PHYSICALOFFSETY, PHYSICALWIDTH, SRCCOPY, VERTRES,
 };
 use windows::Win32::Graphics::Printing::{
-    ClosePrinter, EnumPrintersW, OpenPrinterW, PRINTER_ENUM_CONNECTIONS, PRINTER_ENUM_LOCAL,
-    PRINTER_INFO_2W,
+    ClosePrinter, DocumentPropertiesW, EnumPrintersW, OpenPrinterW, PRINTER_ENUM_CONNECTIONS,
+    PRINTER_ENUM_LOCAL, PRINTER_INFO_2W,
 };
-use windows::Win32::Storage::Xps::{EndDoc, EndPage, StartDocW, StartPage, DOCINFOW};
+use windows::Win32::Storage::Xps::{
+    DeviceCapabilitiesW, EndDoc, EndPage, StartDocW, StartPage, DC_ENUMRESOLUTIONS, DOCINFOW,
+};
 
 /// Owns an HDC and deletes it on drop, so early returns cannot leak it.
 struct PrinterDc(HDC);
 
 impl PrinterDc {
     fn open(printer: &str) -> Result<Self> {
+        Self::open_with_dpi(printer, None)
+    }
+
+    /// Open a device context, optionally asking the driver for a resolution.
+    ///
+    /// The driver's own setting is used when `dpi` is `None`. A requested
+    /// resolution is passed through DEVMODE, which is the only way to print at
+    /// anything but whatever the Windows printer dialog was last left on — and
+    /// unlike `dmScale`, the resolution fields are honoured by real drivers.
+    /// A driver that ignores them simply prints at its current setting, which
+    /// `device_dpi` then reports, so the raster still matches the paper.
+    fn open_with_dpi(printer: &str, dpi: Option<DeviceDpi>) -> Result<Self> {
         let name = to_wide(printer);
-        // SAFETY: `name` is a NUL-terminated wide string that outlives the call.
-        let hdc = unsafe { CreateDCW(PCWSTR::null(), PCWSTR(name.as_ptr()), PCWSTR::null(), None) };
+
+        let mut devmode = match dpi {
+            Some(d) => printer_devmode(printer).map(|mut dm| {
+                // dmPrintQuality carries the horizontal resolution and lives in
+                // DEVMODE's printer-side union; dmYResolution is a plain field.
+                dm.Anonymous1.Anonymous1.dmPrintQuality = clamp_dpi(d.x);
+                dm.dmYResolution = clamp_dpi(d.y);
+                dm.dmFields |= DM_PRINTQUALITY | DM_YRESOLUTION;
+                dm
+            }),
+            None => None,
+        };
+
+        // SAFETY: `name` is a NUL-terminated wide string that outlives the call,
+        // and `devmode`, when present, is a DEVMODEW the driver itself sized.
+        let hdc = unsafe {
+            CreateDCW(
+                PCWSTR::null(),
+                PCWSTR(name.as_ptr()),
+                PCWSTR::null(),
+                devmode.as_mut().map(|dm| dm as *const DEVMODEW),
+            )
+        };
         if hdc.is_invalid() {
             return Err(PrintError::PrinterNotFound(printer.to_string()));
         }
@@ -40,6 +76,49 @@ impl PrinterDc {
         // SAFETY: self.0 is a valid DC for as long as this struct lives.
         unsafe { GetDeviceCaps(self.0, index) }
     }
+}
+
+/// DEVMODE stores resolution in an `i16`, so a larger value cannot be asked for.
+fn clamp_dpi(dpi: u32) -> i16 {
+    dpi.min(i16::MAX as u32) as i16
+}
+
+/// The driver's current DEVMODE, as the starting point for a change.
+///
+/// Built from the driver rather than zeroed: DEVMODE carries driver-private
+/// data past its public fields, and discarding it would reset settings the user
+/// made in the Windows dialog.
+fn printer_devmode(printer: &str) -> Option<DEVMODEW> {
+    let name = to_wide(printer);
+
+    // Size first: the public struct is only the start of what the driver keeps.
+    // SAFETY: `name` outlives the call; a null output asks for the size.
+    let needed = unsafe {
+        DocumentPropertiesW(None, None, PCWSTR(name.as_ptr()), None, None, 0)
+    };
+    if needed <= 0 {
+        return None;
+    }
+
+    let mut buffer = vec![0u8; needed as usize];
+    let dm = buffer.as_mut_ptr().cast::<DEVMODEW>();
+    // SAFETY: the buffer is exactly the size the driver asked for, and
+    // DM_OUT_BUFFER tells it to fill that buffer with the current settings.
+    let rc = unsafe {
+        DocumentPropertiesW(
+            None,
+            None,
+            PCWSTR(name.as_ptr()),
+            Some(dm),
+            None,
+            DM_OUT_BUFFER.0,
+        )
+    };
+    if rc < 0 {
+        return None;
+    }
+    // SAFETY: the driver filled at least a full DEVMODEW.
+    Some(unsafe { *dm })
 }
 
 impl Drop for PrinterDc {
@@ -130,6 +209,18 @@ impl PrintBackend for WindowsPrintBackend {
         Ok(out)
     }
 
+    fn device_dpi_for(&self, printer: &str, requested: Option<DeviceDpi>) -> Result<DeviceDpi> {
+        let dc = PrinterDc::open_with_dpi(printer, requested)?;
+        let x = dc.caps(LOGPIXELSX);
+        let y = dc.caps(LOGPIXELSY);
+        if x <= 0 || y <= 0 {
+            return Err(PrintError::Backend(format!(
+                "driver reported nonsensical resolution {x}x{y}"
+            )));
+        }
+        Ok(DeviceDpi { x: x as u32, y: y as u32 })
+    }
+
     fn device_dpi(&self, printer: &str) -> Result<DeviceDpi> {
         let dc = PrinterDc::open(printer)?;
         let x = dc.caps(LOGPIXELSX);
@@ -140,6 +231,56 @@ impl PrintBackend for WindowsPrintBackend {
             )));
         }
         Ok(DeviceDpi { x: x as u32, y: y as u32 })
+    }
+
+    fn available_dpi(&self, printer: &str) -> Result<Vec<DeviceDpi>> {
+        let name = to_wide(printer);
+
+        // Asked twice: once for the count, once for the values. A driver that
+        // enumerates none returns -1, which is not an error — it simply has no
+        // list to offer, and the current setting stands.
+        // SAFETY: `name` is NUL-terminated and outlives both calls; passing a
+        // null output buffer is how the count is requested.
+        let count = unsafe {
+            DeviceCapabilitiesW(
+                PCWSTR(name.as_ptr()),
+                PCWSTR::null(),
+                DC_ENUMRESOLUTIONS,
+                PWSTR::null(),
+                None,
+            )
+        };
+        if count <= 0 {
+            return Ok(Vec::new());
+        }
+
+        // Each entry is a pair of i32: horizontal then vertical dpi.
+        let mut pairs = vec![0i32; count as usize * 2];
+        // SAFETY: the buffer holds exactly the pair count the call above
+        // reported, which is what the driver writes.
+        let written = unsafe {
+            DeviceCapabilitiesW(
+                PCWSTR(name.as_ptr()),
+                PCWSTR::null(),
+                DC_ENUMRESOLUTIONS,
+                PWSTR(pairs.as_mut_ptr().cast()),
+                None,
+            )
+        };
+        if written <= 0 {
+            return Ok(Vec::new());
+        }
+
+        let mut out = Vec::new();
+        for pair in pairs.chunks_exact(2).take(written as usize) {
+            let (x, y) = (pair[0], pair[1]);
+            if x > 0 && y > 0 {
+                out.push(DeviceDpi { x: x as u32, y: y as u32 });
+            }
+        }
+        out.sort_by_key(|d| (d.x, d.y));
+        out.dedup();
+        Ok(out)
     }
 
     fn device_paper(&self, printer: &str) -> Result<DevicePaper> {
@@ -190,7 +331,7 @@ impl PrintBackend for WindowsPrintBackend {
 
     fn print_raster(&self, job: &PrintJob) -> Result<JobId> {
         job.validate()?;
-        let dc = PrinterDc::open(&job.printer)?;
+        let dc = PrinterDc::open_with_dpi(&job.printer, job.dpi)?;
 
         let doc_name = to_wide(&job.document_name);
         let info = DOCINFOW {

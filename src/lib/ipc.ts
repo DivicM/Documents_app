@@ -97,6 +97,11 @@ export interface Printer {
   isDefault: boolean;
 }
 
+export interface DpiOption {
+  x: number;
+  y: number;
+}
+
 export interface PrinterCapabilities {
   dpiX: number;
   dpiY: number;
@@ -107,6 +112,8 @@ export interface PrinterCapabilities {
   /** The paper the driver is set to, which may differ from the one chosen. */
   paperWidthMm: number;
   paperHeightMm: number;
+  /** Resolutions the driver offers. Empty when it enumerates none. */
+  availableDpi: DpiOption[];
 }
 
 export interface Placement {
@@ -167,6 +174,7 @@ export async function printerCapabilities(
     margin_bottom_mm: number;
     paper_width_mm: number;
     paper_height_mm: number;
+    available_dpi: Array<{ x: number; y: number }>;
   }>("printer_capabilities", {
     printer,
     paperWidthMm,
@@ -181,6 +189,7 @@ export async function printerCapabilities(
     marginBottomMm: r.margin_bottom_mm,
     paperWidthMm: r.paper_width_mm,
     paperHeightMm: r.paper_height_mm,
+    availableDpi: r.available_dpi ?? [],
   };
 }
 
@@ -801,6 +810,8 @@ export async function printMixedSheet(args: {
   /** Print a guide along the bottom edge of each photo only. */
   bottomMark?: boolean;
   photo?: PhotoPayload | null;
+  /** Resolution to ask the driver for; omit for its current setting. */
+  dpi?: DpiOption | null;
 }): Promise<number> {
   return invokePrint(
     "print_mixed_sheet",
@@ -816,6 +827,7 @@ export async function printMixedSheet(args: {
       cut_marks: args.cutMarks ?? false,
       bottom_mark: args.bottomMark ?? false,
       photo: args.photo ? photoToWire(args.photo) : null,
+      dpi: args.dpi ?? null,
     },
     args.photo,
   );
@@ -930,6 +942,13 @@ export interface SheetSettings {
   startMaximized: boolean;
   /** UI theme. */
   theme: "light" | "dark";
+  /**
+   * Chosen print resolution per printer, as "XxY" keyed by printer name.
+   *
+   * Per printer because the offered resolutions differ between devices; a value
+   * carried over from another one would be silently wrong.
+   */
+  printerDpi: Record<string, string>;
 }
 
 interface RawSheetSettings {
@@ -945,6 +964,7 @@ interface RawSheetSettings {
   font_scale_percent: number;
   start_maximized: boolean;
   theme: string;
+  printer_dpi: Record<string, string>;
 }
 
 export async function getSheetSettings(): Promise<SheetSettings> {
@@ -962,6 +982,7 @@ export async function getSheetSettings(): Promise<SheetSettings> {
     fontScalePercent: r.font_scale_percent,
     startMaximized: r.start_maximized,
     theme: r.theme === "dark" ? "dark" : "light",
+    printerDpi: r.printer_dpi ?? {},
   };
 }
 
@@ -980,6 +1001,7 @@ export async function saveSheetSettings(s: SheetSettings): Promise<void> {
       font_scale_percent: s.fontScalePercent,
       start_maximized: s.startMaximized,
       theme: s.theme,
+      printer_dpi: s.printerDpi,
     } satisfies RawSheetSettings,
   });
 }
@@ -1027,6 +1049,8 @@ export async function printSheet(args: {
   bottomMark?: boolean;
   /** Omit to print the layout as plain rectangles, without using photo paper. */
   photo?: PhotoPayload | null;
+  /** Resolution to ask the driver for; omit for its current setting. */
+  dpi?: DpiOption | null;
 }): Promise<number> {
   return invokePrint(
     "print_sheet",
@@ -1045,6 +1069,7 @@ export async function printSheet(args: {
       cut_marks: args.cutMarks ?? false,
       bottom_mark: args.bottomMark ?? false,
       photo: args.photo ? photoToWire(args.photo) : null,
+      dpi: args.dpi ?? null,
     },
     args.photo,
   );

@@ -101,6 +101,8 @@ fn main() {
         width_px: raster.width_px,
         height_px: raster.height_px,
         document_name: "Kalibracija 50x50mm".into(),
+        // Measures the driver as it is set, so it requests no resolution.
+        dpi: None,
     };
 
     match backend.print_raster(&job) {

@@ -39,6 +39,9 @@ const hr: Record<string, string> = {
   "printer.paper_overridden":
     "Printer je namješten na {width} × {height} mm, pa se koristi ta veličina umjesto odabrane. Veličinu papira mijenjajte u postavkama printera u Windowsima.",
   "printer.refresh": "Osvježi",
+  "printer.resolution": "Rezolucija ispisa",
+  "printer.resolution_driver": "Postavka printera ({dpiX} × {dpiY} DPI)",
+  "printer.resolution_option": "{dpiX} × {dpiY} DPI",
 
   "calibration.never": "Nije kalibrirano",
   "calibration.done_at": "Kalibrirano: {date}",

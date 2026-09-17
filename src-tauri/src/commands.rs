@@ -101,6 +101,17 @@ pub struct PrinterCapabilitiesDto {
     /// for one size and cannot be told otherwise from here.
     pub paper_width_mm: f64,
     pub paper_height_mm: f64,
+    /// Every resolution the driver offers, for the user to pick from.
+    ///
+    /// Empty when the driver enumerates none, in which case `dpi_x`/`dpi_y`
+    /// are all there is and the UI offers no choice.
+    pub available_dpi: Vec<DpiOptionDto>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DpiOptionDto {
+    pub x: u32,
+    pub y: u32,
 }
 
 #[tauri::command]
@@ -115,6 +126,9 @@ pub fn printer_capabilities(
         let dpi = b.device_dpi(&printer).map_err(|e| {
             UiError::with("error.printer.dpi_failed", serde_json::json!({ "detail": e.to_string() }))
         })?;
+        // A driver that will not enumerate is not an error: it simply offers no
+        // choice, and the current setting stands.
+        let available = b.available_dpi(&printer).unwrap_or_default();
         let paper = PaperSize { width_mm: paper_width_mm, height_mm: paper_height_mm };
         let m = b.hardware_margins_mm(&printer, paper).map_err(|e| {
             UiError::with("error.printer.margins_failed", serde_json::json!({ "detail": e.to_string() }))
@@ -132,6 +146,10 @@ pub fn printer_capabilities(
             margin_bottom_mm: m.bottom_mm,
             paper_width_mm: dp.map(|d| d.physical_width_mm).unwrap_or(paper_width_mm),
             paper_height_mm: dp.map(|d| d.physical_height_mm).unwrap_or(paper_height_mm),
+            available_dpi: available
+                .into_iter()
+                .map(|d| DpiOptionDto { x: d.x, y: d.y })
+                .collect(),
         })
     }
     #[cfg(not(windows))]
@@ -520,6 +538,9 @@ pub fn print_calibration_square(printer: String, apply_calibration: bool) -> Cmd
             width_px: raster.width_px,
             height_px: raster.height_px,
             document_name: "Kalibracija 50x50mm".into(),
+            // The calibration square measures the driver as it is set, so it
+            // deliberately does not request a resolution of its own.
+            dpi: None,
         };
 
         b.print_raster(&job).map(|id| id.0).map_err(|e| {
@@ -669,6 +690,22 @@ pub struct PrintSheetRequest {
     /// Omitted to print the layout as plain rectangles, which is useful for
     /// checking geometry without using up photo paper.
     pub photo: Option<PhotoPayload>,
+    /// Resolution to ask the driver for, or absent for its current setting.
+    #[serde(default)]
+    pub dpi: Option<DpiRequest>,
+}
+
+/// A resolution the user picked from what the driver offers.
+#[derive(Debug, Clone, Copy, Deserialize)]
+pub struct DpiRequest {
+    pub x: u32,
+    pub y: u32,
+}
+
+impl From<DpiRequest> for platform::print::DeviceDpi {
+    fn from(d: DpiRequest) -> Self {
+        Self { x: d.x, y: d.y }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -692,6 +729,9 @@ pub struct PrintMixedRequest {
     #[serde(default)]
     pub bottom_mark: bool,
     pub photo: Option<PhotoPayload>,
+    /// Resolution to ask the driver for, or absent for its current setting.
+    #[serde(default)]
+    pub dpi: Option<DpiRequest>,
 }
 
 /// Apply tone and background to the source pixels, in the order the preview uses.
@@ -731,7 +771,10 @@ pub fn print_mixed_sheet(request: tauri::ipc::Request<'_>) -> CmdResult<u32> {
         use domain::resample::ImageRef;
 
         let b = backend();
-        let dpi = b.device_dpi(&req.printer).map_err(|e| {
+        let requested_dpi = req.dpi.map(Into::into);
+        // Ask what the driver will really do with the request: it is free to
+        // ignore it, and the raster must match what lands on paper.
+        let dpi = b.device_dpi_for(&req.printer, requested_dpi).map_err(|e| {
             UiError::with("error.printer.dpi_failed", serde_json::json!({ "detail": e.to_string() }))
         })?;
 
@@ -810,6 +853,7 @@ pub fn print_mixed_sheet(request: tauri::ipc::Request<'_>) -> CmdResult<u32> {
             width_px: raster.width_px,
             height_px: raster.height_px,
             document_name: "Fotografije za dokumente".into(),
+            dpi: requested_dpi,
         };
 
         b.print_raster(&job).map(|id| id.0).map_err(|e| {
@@ -848,7 +892,10 @@ pub fn print_sheet(request: tauri::ipc::Request<'_>) -> CmdResult<u32> {
         };
 
         let b = backend();
-        let dpi = b.device_dpi(&req.printer).map_err(|e| {
+        let requested_dpi = req.dpi.map(Into::into);
+        // Ask what the driver will really do with the request: it is free to
+        // ignore it, and the raster must match what lands on paper.
+        let dpi = b.device_dpi_for(&req.printer, requested_dpi).map_err(|e| {
             UiError::with("error.printer.dpi_failed", serde_json::json!({ "detail": e.to_string() }))
         })?;
 
@@ -918,6 +965,7 @@ pub fn print_sheet(request: tauri::ipc::Request<'_>) -> CmdResult<u32> {
             width_px: raster.width_px,
             height_px: raster.height_px,
             document_name: "Fotografije za dokumente".into(),
+            dpi: requested_dpi,
         };
 
         b.print_raster(&job).map(|id| id.0).map_err(|e| {

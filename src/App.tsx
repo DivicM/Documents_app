@@ -157,6 +157,11 @@ export default function App() {
   const [selectedPrinter, setSelectedPrinter] = useState<string>("");
   const [caps, setCaps] = useState<PrinterCapabilities | null>(null);
   const [calibration, setCalibration] = useState<Calibration | null>(null);
+  /**
+   * Chosen resolution per printer, as "XxY". Kept per printer because the
+   * offered resolutions differ between devices.
+   */
+  const [printerDpi, setPrinterDpi] = useState<Record<string, string>>({});
 
   const [paperId, setPaperId] = useState<string>("10x15");
   const [photoWidthMm, setPhotoWidthMm] = useState(35);
@@ -336,6 +341,22 @@ export default function App() {
     return (Math.atan2(dy, dx) * 180) / Math.PI;
   }, [rotationOverride, anchors]);
 
+  /**
+   * The saved resolution for this printer, if the driver still offers it.
+   *
+   * Checked against the current list rather than trusted: a driver update or a
+   * different printer of the same name could drop a resolution, and asking for
+   * one that no longer exists would leave the raster sized for a resolution the
+   * printer will not use.
+   */
+  const chosenDpi = useMemo(() => {
+    const saved = printerDpi[selectedPrinter];
+    if (!saved || !caps) return null;
+    const [x, y] = saved.split("x").map(Number);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+    return caps.availableDpi.find((d) => d.x === x && d.y === y) ?? null;
+  }, [printerDpi, selectedPrinter, caps]);
+
   const chosenPaper = useMemo(
     () => PAPERS.find((p) => p.id === paperId) ?? PAPERS[0],
     [paperId],
@@ -461,6 +482,7 @@ export default function App() {
         setStartMaximized(s.startMaximized);
         setTheme(s.theme);
         setTurnPhoto(s.turnPhoto);
+        setPrinterDpi(s.printerDpi);
         // Only if that printer is still installed; otherwise the default
         // chosen by refreshPrinters stands.
         if (s.printer) setSelectedPrinter((current) => current || s.printer);
@@ -487,6 +509,7 @@ export default function App() {
         fontScalePercent: fontScale,
         startMaximized,
         theme,
+        printerDpi,
       });
       setSettingsStatus(t("settings.saved"));
     } catch (e) {
@@ -505,7 +528,35 @@ export default function App() {
     fontScale,
     startMaximized,
     theme,
+    printerDpi,
   ]);
+
+  /**
+   * Remember a resolution choice straight away.
+   *
+   * Unlike the sheet settings, which are saved on a button, this is a printer
+   * property the user sets once and expects to stay — asking them to also press
+   * Save would be a way to lose it.
+   */
+  const onPickDpi = useCallback(
+    (value: string) => {
+      const next = { ...printerDpi };
+      if (value) {
+        next[selectedPrinter] = value;
+      } else {
+        delete next[selectedPrinter];
+      }
+      setPrinterDpi(next);
+
+      void ipc
+        .getSheetSettings()
+        .then((s) => ipc.saveSheetSettings({ ...s, printerDpi: next }))
+        .catch(() => {
+          // The choice still applies to this session; only persistence failed.
+        });
+    },
+    [printerDpi, selectedPrinter],
+  );
 
   // Recompute the mixed layout whenever the groups or paper change.
   useEffect(() => {
@@ -1210,6 +1261,7 @@ export default function App() {
             cutMarks,
             bottomMark,
             photo,
+            dpi: chosenDpi,
           })
         : await ipc.printSheet({
             printer: selectedPrinter,
@@ -1226,6 +1278,7 @@ export default function App() {
             cutMarks,
             bottomMark,
             photo,
+            dpi: chosenDpi,
           });
       setStatus(t("print.sent", { jobId }));
       return jobId;
@@ -2176,9 +2229,33 @@ export default function App() {
             {t("printer.refresh")}
           </button>
 
+          {caps && caps.availableDpi.length > 1 && (
+            <label>
+              {t("printer.resolution")}
+              <select
+                value={printerDpi[selectedPrinter] ?? ""}
+                onChange={(e) => onPickDpi(e.target.value)}
+              >
+                <option value="">
+                  {t("printer.resolution_driver", { dpiX: caps.dpiX, dpiY: caps.dpiY })}
+                </option>
+                {caps.availableDpi.map((d) => (
+                  <option key={`${d.x}x${d.y}`} value={`${d.x}x${d.y}`}>
+                    {t("printer.resolution_option", { dpiX: d.x, dpiY: d.y })}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+
           {caps && (
             <div className="info">
-              <div>{t("printer.dpi", { dpiX: caps.dpiX, dpiY: caps.dpiY })}</div>
+              <div>
+                {t("printer.dpi", {
+                  dpiX: chosenDpi?.x ?? caps.dpiX,
+                  dpiY: chosenDpi?.y ?? caps.dpiY,
+                })}
+              </div>
               <div>
                 {t("printer.paper_from_driver", {
                   width: formatMm(paper.widthMm, 1),

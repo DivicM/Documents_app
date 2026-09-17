@@ -85,6 +85,13 @@ fn current_target() -> &'static str {
 
 /// The CSP must exist and must forbid outbound connections once the Tauri app
 /// is scaffolded. Skipped until then so the test does not fail on absence.
+///
+/// `connect-src` cannot be `'none'`: Tauri carries a raw request body to the
+/// IPC endpoint by `fetch`, and blocking that makes the webview fall back to
+/// `postMessage`, which is JSON-only — every photo then arrives as a number
+/// array and the pixel commands reject it. The local IPC origins are therefore
+/// allowed, and every source is checked to be one of them, which is what the
+/// guarantee actually rests on.
 #[test]
 fn tauri_csp_forbids_network_when_present() {
     let conf = workspace_root().join("src-tauri").join("tauri.conf.json");
@@ -100,14 +107,26 @@ fn tauri_csp_forbids_network_when_present() {
         compact.contains("\"csp\":"),
         "tauri.conf.json has no CSP; the offline guarantee is unenforced"
     );
-    assert!(
-        compact.contains("connect-src'none'") || compact.contains("connect-src'self'"),
-        "CSP does not restrict connect-src, so the webview could call out"
-    );
-    assert!(
-        !compact.contains("connect-src*"),
-        "CSP allows connect-src *, which permits arbitrary network calls"
-    );
+
+    let csp = text
+        .lines()
+        .find(|l| l.contains("\"csp\""))
+        .expect("no CSP line");
+    let connect = csp
+        .split(';')
+        .find(|d| {
+            d.trim_start_matches(|c: char| !c.is_alphabetic())
+                .starts_with("connect-src")
+        })
+        .expect("CSP must declare connect-src rather than inherit default-src");
+
+    for source in connect.split_whitespace().skip(1) {
+        let source = source.trim_end_matches(['"', ';']);
+        assert!(
+            matches!(source, "'none'" | "'self'" | "ipc:" | "http://ipc.localhost"),
+            "connect-src allows {source}, which is not a local IPC origin"
+        );
+    }
 }
 
 /// Nothing in the source may reference a remote asset. Catches a CDN font or

@@ -74,6 +74,12 @@ pub struct PrintJob {
     pub width_px: u32,
     pub height_px: u32,
     pub document_name: String,
+    /// Resolution to ask the driver for, or `None` for its current setting.
+    ///
+    /// The raster must already be sized for this, since it is blitted 1:1 —
+    /// which is why the choice travels with the job rather than being a
+    /// separate call that could disagree with the pixels.
+    pub dpi: Option<DeviceDpi>,
 }
 
 impl PrintJob {
@@ -133,6 +139,24 @@ pub trait PrintBackend {
     /// Physical resolution the device actually prints at.
     fn device_dpi(&self, printer: &str) -> Result<DeviceDpi>;
 
+    /// What the device reports once a resolution has been requested.
+    ///
+    /// Asked rather than assumed: a driver is free to ignore the request, and
+    /// the raster must be sized for what it will really print, not for what it
+    /// was asked for. `None` reports the current setting, as `device_dpi` does.
+    fn device_dpi_for(&self, printer: &str, requested: Option<DeviceDpi>) -> Result<DeviceDpi> {
+        let _ = requested;
+        self.device_dpi(printer)
+    }
+
+    /// Every resolution the driver offers, for the user to choose between.
+    ///
+    /// `device_dpi` reports only what the driver is currently set to, so a
+    /// printer capable of 600 dpi prints at 300 until someone changes it in the
+    /// Windows dialog. Empty when the driver enumerates none, in which case the
+    /// current setting is all there is.
+    fn available_dpi(&self, printer: &str) -> Result<Vec<DeviceDpi>>;
+
     /// Non-printable border the hardware imposes for the given paper.
     fn hardware_margins_mm(&self, printer: &str, paper: PaperSize) -> Result<Margins>;
 
@@ -154,6 +178,7 @@ mod tests {
             width_px: w,
             height_px: h,
             document_name: "test".into(),
+            dpi: None,
         }
     }
 

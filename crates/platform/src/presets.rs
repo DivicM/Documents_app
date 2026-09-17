@@ -171,6 +171,14 @@ pub struct SheetSettings {
     /// UI theme: "light" or "dark". Anything else is treated as light.
     #[serde(default = "default_theme")]
     pub theme: String,
+    /// Chosen print resolution per printer, as "XxY" keyed by printer name.
+    ///
+    /// Per printer because the offered resolutions differ between devices, and
+    /// a value carried over from another one would be silently wrong. An entry
+    /// missing, or naming a resolution the driver no longer offers, means the
+    /// driver's own current setting is used.
+    #[serde(default)]
+    pub printer_dpi: BTreeMap<String, String>,
 }
 
 fn default_theme() -> String {
@@ -221,6 +229,7 @@ impl Default for SheetSettings {
             font_scale_percent: default_font_scale(),
             start_maximized: false,
             theme: default_theme(),
+            printer_dpi: BTreeMap::new(),
         }
     }
 }

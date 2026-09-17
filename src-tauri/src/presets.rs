@@ -113,6 +113,9 @@ pub struct SheetSettingsDto {
     pub font_scale_percent: u32,
     pub start_maximized: bool,
     pub theme: String,
+    /// Chosen print resolution per printer, as "XxY" keyed by printer name.
+    #[serde(default)]
+    pub printer_dpi: std::collections::BTreeMap<String, String>,
 }
 
 impl From<&platform::presets::SheetSettings> for SheetSettingsDto {
@@ -130,6 +133,7 @@ impl From<&platform::presets::SheetSettings> for SheetSettingsDto {
             font_scale_percent: s.font_scale_percent,
             start_maximized: s.start_maximized,
             theme: s.theme.clone(),
+            printer_dpi: s.printer_dpi.clone(),
         }
     }
 }
@@ -164,6 +168,7 @@ pub fn save_sheet_settings(settings: SheetSettingsDto) -> Result<(), UiError> {
         // Only the two known values are stored, so a hand-edited config cannot
         // leave the UI with a theme name nothing matches.
         theme: if settings.theme == "dark" { "dark".into() } else { "light".into() },
+        printer_dpi: settings.printer_dpi,
     };
     cfg.save(&config_path()?).map_err(|e| {
         UiError::with("error.config.save_failed", serde_json::json!({ "detail": e.to_string() }))
