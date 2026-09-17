@@ -8,12 +8,11 @@
 import { invoke } from "@tauri-apps/api/core";
 
 /**
- * What the last pixel-carrying call did, for the diagnostics panel.
+ * How the last pixel-carrying call went, for the diagnostics panel.
  *
- * Whether a body crosses as bytes or as JSON is decided inside Tauri's injected
- * internals, which the page cannot inspect, so the only way to tell is to send
- * something and see how it arrives. A failing install is the only place this
- * has shown up, and it has no console, hence recording it here.
+ * Recorded because the failures worth diagnosing only appear in an installed
+ * build, which has no console: whether a body crossed as bytes or as JSON is
+ * decided inside Tauri's injected internals, and the page cannot inspect them.
  */
 export interface IpcAttempt {
   form: string;
@@ -27,10 +26,10 @@ export function ipcDiagnostics(): IpcAttempt[] {
   return lastAttempts;
 }
 
-/** True when the command refused the body for not being raw bytes. */
-function isNotRaw(e: unknown): boolean {
-  return !!e && typeof e === "object" && "key" in e &&
-    (e as { key?: unknown }).key === "error.image.not_raw";
+function describeError(e: unknown): string {
+  if (e && typeof e === "object" && "key" in e) return String((e as { key: unknown }).key);
+  if (e instanceof Error) return e.message;
+  return String(e);
 }
 
 /**
@@ -41,10 +40,9 @@ function isNotRaw(e: unknown): boolean {
  * 10.7MB photo into 32MB of JSON text and costs roughly two seconds to encode
  * and parse — far more than the work being asked for.
  *
- * Which payload shape is recognised as raw turns out to vary between webview
- * builds: the same code sends bytes in development and JSON in an installed
- * build on another machine. Rather than pick one shape and hope, try each in
- * turn and keep what worked, recording the outcomes for the diagnostics panel.
+ * This needs `connect-src` in the CSP to reach the IPC endpoint: the raw body
+ * travels by `fetch`, and blocking it makes the webview fall back to
+ * `postMessage`, which carries JSON only — so the commands reject every photo.
  *
  * Dimensions travel as headers because the body carries only pixels.
  */
@@ -58,48 +56,21 @@ async function invokeWithPixels<T>(
   // `slice()` yields a copy whose buffer is exactly this image, which matters
   // when the canvas hands back a view into a larger buffer.
   const bytes = new Uint8Array(rgba.buffer, rgba.byteOffset, rgba.byteLength).slice();
-  const headers = {
-    "x-width": String(width),
-    "x-height": String(height),
-    ...extraHeaders,
-  };
 
-  const forms: Array<[string, unknown]> = [
-    ["Uint8Array", bytes],
-    ["ArrayBuffer", bytes.buffer],
-    ["number[]", Array.from(bytes)],
-  ];
-
-  const attempts: IpcAttempt[] = [];
-  let lastError: unknown;
-
-  for (const [form, payload] of forms) {
-    try {
-      const r = await invoke<T>(cmd, payload as never, { headers });
-      attempts.push({ form, ok: true, detail: "prihvaćeno" });
-      lastAttempts = attempts;
-      return r;
-    } catch (e) {
-      lastError = e;
-      attempts.push({
-        form,
-        ok: false,
-        detail: isNotRaw(e) ? "stiglo kao JSON" : describeError(e),
-      });
-      // Only a not-raw rejection means the shape was wrong; anything else is a
-      // real failure and retrying in another shape would just repeat it.
-      if (!isNotRaw(e)) break;
-    }
+  try {
+    const r = await invoke<T>(cmd, bytes, {
+      headers: {
+        "x-width": String(width),
+        "x-height": String(height),
+        ...extraHeaders,
+      },
+    });
+    lastAttempts = [{ form: "Uint8Array", ok: true, detail: "prihvaćeno" }];
+    return r;
+  } catch (e) {
+    lastAttempts = [{ form: "Uint8Array", ok: false, detail: describeError(e) }];
+    throw e;
   }
-
-  lastAttempts = attempts;
-  throw lastError;
-}
-
-function describeError(e: unknown): string {
-  if (e && typeof e === "object" && "key" in e) return String((e as { key: unknown }).key);
-  if (e instanceof Error) return e.message;
-  return String(e);
 }
 
 /**
@@ -811,17 +782,8 @@ async function invokePrint(
   out.set(json, 4);
   out.set(pixels, 4 + json.byteLength);
 
-  // Same payload-shape uncertainty as `invokeWithPixels`, so the same fallback.
-  let lastError: unknown;
-  for (const payload of [out, out.buffer, Array.from(out)]) {
-    try {
-      return await invoke<number>(cmd, payload as never);
-    } catch (e) {
-      lastError = e;
-      if (!isNotRaw(e)) break;
-    }
-  }
-  throw lastError;
+  // The array itself, not its `.buffer`: see `invokeWithPixels`.
+  return invoke<number>(cmd, out);
 }
 
 export async function printMixedSheet(args: {
