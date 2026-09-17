@@ -97,6 +97,22 @@ export function PhotoPreview({
     const srcH = image instanceof HTMLCanvasElement ? image.height : image.naturalHeight;
     ctx.drawImage(image, 0, 0, srcW, srcH);
     ctx.restore();
+
+    // A plumb line down the middle of the finished photo, to judge the
+    // straightening against. Drawn after `restore`, so it stays vertical while
+    // the picture under it rotates — a guide that tilted with the photo would
+    // show nothing. On screen only: nothing here reaches the printed raster,
+    // which is rendered in Rust.
+    ctx.save();
+    ctx.strokeStyle = "#39ff14";
+    ctx.lineWidth = 1;
+    ctx.setLineDash([6, 5]);
+    ctx.beginPath();
+    // Half a pixel keeps a 1px line on the pixel grid instead of spanning two.
+    ctx.moveTo(Math.round(cssW / 2) + 0.5, 0);
+    ctx.lineTo(Math.round(cssW / 2) + 0.5, cssH);
+    ctx.stroke();
+    ctx.restore();
   }, [image, crop, rotationDeg, widthMm, heightMm, maxEdgePx]);
 
   return (

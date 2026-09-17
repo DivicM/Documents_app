@@ -38,6 +38,16 @@ type Handle = HandleName | null;
 const HANDLE_RADIUS_PX = 7;
 
 /**
+ * How far the crop moves per unit of pointer movement.
+ *
+ * Below 1 because this drag is used to line the head up against the centre
+ * guide, which is a matter of a few pixels: at 1:1 the smallest deliberate
+ * hand movement overshoots it. The anchors are left undamped — those are
+ * dragged to a visible feature, where following the pointer is what is wanted.
+ */
+const CROP_DRAG_DAMPING = 0.35;
+
+/**
  * The photo with the crop rectangle and draggable head anchors.
  *
  * Anchors are the two points a five-point detector cannot see directly, so
@@ -68,6 +78,15 @@ export function PhotoCanvas({
   const [dragging, setDragging] = useState<Handle>(null);
   /** Set while dragging the crop body; holds the last pointer position. */
   const cropDrag = useRef<{ x: number; y: number } | null>(null);
+  /**
+   * Movement the damping has not spent yet, in canvas pixels.
+   *
+   * Kept rather than discarded: dividing each step and dropping the remainder
+   * would throw away most of a slow drag, so small movements would do nothing
+   * at all. Carrying it means the crop still follows the pointer exactly, only
+   * at a fraction of the distance.
+   */
+  const cropResidual = useRef({ x: 0, y: 0 });
   const [cursor, setCursor] = useState("crosshair");
   /** Mask rendered once into an offscreen canvas, rather than per frame. */
   const maskCanvas = useRef<HTMLCanvasElement | null>(null);
@@ -271,6 +290,8 @@ export function PhotoCanvas({
     // way to correct framing without touching individual points.
     if (onCropNudge && insideCrop(x, y)) {
       cropDrag.current = { x, y };
+      // Start clean, or leftover movement from the last drag would jump.
+      cropResidual.current = { x: 0, y: 0 };
       e.currentTarget.setPointerCapture(e.pointerId);
     }
   };
@@ -288,10 +309,22 @@ export function PhotoCanvas({
     }
 
     if (cropDrag.current && onCropNudge) {
-      const dx = toSource(x - cropDrag.current.x);
-      const dy = toSource(y - cropDrag.current.y);
+      // Damped: the crop is being aligned to a guide by eye, where a 1:1 drag
+      // overshoots by several pixels before the hand settles.
+      const moveX = (x - cropDrag.current.x) * CROP_DRAG_DAMPING + cropResidual.current.x;
+      const moveY = (y - cropDrag.current.y) * CROP_DRAG_DAMPING + cropResidual.current.y;
+
+      // Whole source pixels only; the rest is carried to the next event so a
+      // slow drag still accumulates rather than being rounded away.
+      const dx = Math.trunc(toSource(moveX));
+      const dy = Math.trunc(toSource(moveY));
+      cropResidual.current = {
+        x: moveX - toCanvas(dx),
+        y: moveY - toCanvas(dy),
+      };
+
       cropDrag.current = { x, y };
-      onCropNudge(dx, dy);
+      if (dx !== 0 || dy !== 0) onCropNudge(dx, dy);
       return;
     }
 

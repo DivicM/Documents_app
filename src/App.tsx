@@ -1489,13 +1489,17 @@ export default function App() {
       {step !== STEP_EDIT && <StepBar current={step} onGoTo={setStep} />}
 
       {step === STEP_PICK && (
-        <div className="step-pane step-pane-narrow">
-          <DropZone onPick={(f) => void onPickImage(f)} loadedName={imageName} />
+        // A row once a photo is loaded, so the picture gets a panel of its own
+        // beside the drop zone rather than being squeezed underneath it.
+        <div className={`pick-row ${working ? "pick-row-with-preview" : ""}`}>
           {working && <LoadedPreview canvas={working.canvas} name={imageName} />}
-          {detecting && <p className="status">{t("face.detecting")}</p>}
-          {error && <div className="error">{error}</div>}
-          {error && <Diagnostics />}
-          {status && <div className="status">{status}</div>}
+          <div className="step-pane step-pane-narrow pick-controls">
+            <DropZone onPick={(f) => void onPickImage(f)} loadedName={imageName} />
+            {detecting && <p className="status">{t("face.detecting")}</p>}
+            {error && <div className="error">{error}</div>}
+            {error && <Diagnostics />}
+            {status && <div className="status">{status}</div>}
+          </div>
         </div>
       )}
 

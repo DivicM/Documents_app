@@ -664,28 +664,57 @@ button.small {
   transition: border-color 0.15s, background 0.15s;
 }
 
-/* With a photo loaded the preview below is what matters, so the drop zone
-   gives up most of its height rather than pushing the picture off-screen. */
-.step-pane-narrow:has(.loaded-preview) .dropzone {
+/* Before a photo is loaded the drop zone is the whole step and stays centred;
+   afterwards the preview takes the left half and the controls the right. */
+.pick-row {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  justify-content: center;
+}
+
+/* Both columns run the full height of the row: the controls so the panel does
+   not end mid-air, the preview so the picture has a box to be sized against. */
+.pick-row-with-preview {
+  align-items: stretch;
+  gap: 20px;
+}
+
+/* `step-pane` is `flex: 1`, which inside the row would claim all the width;
+   beside a preview it takes a fixed share and leaves the rest to the picture. */
+.pick-row-with-preview .pick-controls {
+  flex: 0 1 420px;
+  margin: 0;
+}
+
+/* The drop zone no longer has to carry the step on its own, so it gives up the
+   height the picture needs. */
+.pick-row-with-preview .dropzone {
   min-height: 0;
   padding: 16px;
 }
 
 .loaded-preview {
-  margin: 16px 0 0;
+  margin: 0;
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
+  justify-content: flex-start;
   gap: 8px;
 }
 
 .loaded-preview canvas {
+  /* Fits whatever box the row leaves, so the picture is never cut off and the
+     step's buttons stay reachable without scrolling. `min-height: 0` lets it
+     shrink: a flex item will not go below its content size without it. */
   max-width: 100%;
-  /* Tall enough to judge the photograph by, short enough that the step's
-     buttons stay reachable without scrolling on a laptop screen. */
-  max-height: 60vh;
+  min-height: 0;
   width: auto;
   height: auto;
+  object-fit: contain;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--panel);
